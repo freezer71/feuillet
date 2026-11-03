@@ -1,6 +1,6 @@
 # Journal des modifications
 
-## Non publié
+## 0.1.0 - 2026-11-03
 
 ### Ajouté
 - Impression via CUPS, avec suivi du travail et options avancées
