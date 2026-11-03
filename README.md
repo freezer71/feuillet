@@ -99,6 +99,9 @@ makepkg -si
 sudo apt install ./dist/feuillet_0.1.0_all.deb
 ```
 
+Les paquets déjà construits se trouvent aussi dans les
+[versions publiées](https://github.com/freezer71/feuillet/releases).
+
 **Fedora** (demande `rpm-build`)
 
 ```sh
@@ -191,7 +194,12 @@ ni ne se chevauche, de 1360 à 520 pixels de large.
 | `brother.py`, `devices.py` | Raster des étiquettes, état des imprimantes |
 | `theme.py`, `widgets.py`, `icons.py` | Apparence et composants partagés |
 
+## Licence
+
+Feuillet est un logiciel libre, distribué sous licence [GPL-3.0](LICENSE).
+
 ## Remerciements
 
 Le format d'envoi à la Brother a été écrit d'après le code source de
-[brother_ql](https://github.com/pklaus/brother_ql), qui n'est pas utilisé comme dépendance.
+[brother_ql](https://github.com/pklaus/brother_ql), sous licence GPL-3.0, qui n'est pas utilisé comme
+dépendance.

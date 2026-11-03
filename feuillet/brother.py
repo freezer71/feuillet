@@ -1,5 +1,7 @@
 """Pilote de la Brother QL-1060N : génération du raster et envoi direct (port 9100).
 
+Écrit d'après brother_ql (https://github.com/pklaus/brother_ql), sous licence GPL-3.0.
+
 Le format suit le protocole raster Brother QL, tel que décrit par le code source de
 brother_ql. tests/test_core.py en vérifie la structure octet par octet.
 """

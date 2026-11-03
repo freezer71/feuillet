@@ -17,6 +17,7 @@ printf '#!/bin/sh\nexec python3 -m feuillet "$@"\n' > "$package/usr/bin/feuillet
 chmod 755 "$package/usr/bin/feuillet"
 install -Dm644 "$root/data/feuillet.desktop" "$package/usr/share/applications/feuillet.desktop"
 install -Dm644 "$root/data/feuillet.svg" "$package/usr/share/icons/hicolor/scalable/apps/feuillet.svg"
+install -Dm644 "$root/LICENSE" "$package/usr/share/doc/feuillet/copyright"
 
 cat > "$package/DEBIAN/control" <<CONTROL
 Package: feuillet
@@ -24,7 +25,7 @@ Version: $version
 Section: graphics
 Priority: optional
 Architecture: all
-Maintainer: freezer71 <noreply@users.noreply.github.com>
+Maintainer: freezer71 <freezer71@users.noreply.github.com>
 Depends: python3 (>= 3.12), python3-pyside6.qtwidgets, python3-pyside6.qtsvg, python3-pyside6.qtdbus, python3-pil, python3-numpy, python3-cups, python3-pypdf, cups-client, cups-ipp-utils, poppler-utils, snmp, sane-utils, fonts-noto-core
 Recommends: tesseract-ocr, tesseract-ocr-fra
 Suggests: libreoffice

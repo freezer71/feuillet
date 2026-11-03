@@ -3,6 +3,7 @@
 ## 0.1.0 - 2026-11-03
 
 ### Ajouté
+- Publication sous licence GPL-3.0
 - Impression via CUPS, avec suivi du travail et options avancées
 - Étiquettes Brother QL-1060N en envoi direct
 - Scan via le pilote `epsonscan2`
