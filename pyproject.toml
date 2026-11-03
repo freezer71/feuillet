@@ -1,0 +1,10 @@
+[project]
+name = "imprimerie"
+version = "0.1.0"
+description = "Imprimer, scanner et assembler des documents sous Linux"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["PySide6", "Pillow", "numpy", "pycups", "pypdf"]
+
+[project.gui-scripts]
+imprimerie = "imprimerie.__main__:main"
