@@ -127,7 +127,8 @@ class Toast(QFrame):
     def __init__(self, text: str, kind: str = "info", busy: bool = False):
         super().__init__()
         self.setObjectName("toast")
-        self.setFixedWidth(360)
+        self.setMinimumWidth(240)
+        self.setMaximumWidth(360)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(8)
@@ -144,11 +145,11 @@ class Toast(QFrame):
         self.message.setWordWrap(True)
         self.message.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         row.addWidget(self.message, 1)
-        self.action = QPushButton()
-        self.action.setObjectName("link")
-        self.action.hide()
-        row.addWidget(self.action, 0, Qt.AlignmentFlag.AlignTop)
         layout.addLayout(row)
+        self.actions = QHBoxLayout()
+        self.actions.setSpacing(8)
+        self.actions.addStretch(1)
+        layout.addLayout(self.actions)
         self.bar = QProgressBar()
         self.bar.setTextVisible(False)
         self.bar.setRange(0, 0)
@@ -180,8 +181,16 @@ class Toast(QFrame):
         else:
             self.icon_label.hide()
 
-    def _close_later(self, kind: str) -> None:
-        QTimer.singleShot(12000 if kind == "error" else 6000, self.dismiss)
+    def _close_later(self, kind: str, has_actions: bool = False) -> None:
+        # Un bouton doit laisser le temps de s'en servir.
+        QTimer.singleShot(20000 if has_actions else 12000 if kind == "error" else 6000, self.dismiss)
+
+    def add_actions(self, actions: list[tuple]) -> None:
+        for text, handler in actions:
+            button = QPushButton(text)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            button.clicked.connect(handler)
+            self.actions.addWidget(button)
 
     def update_text(self, text: str) -> None:
         self.message.setText(text)
@@ -190,7 +199,7 @@ class Toast(QFrame):
         self.bar.setRange(0, max(1, total))
         self.bar.setValue(done)
 
-    def finish(self, text: str, kind: str = "ok", action: tuple | None = None) -> None:
+    def finish(self, text: str, kind: str = "ok", actions: list[tuple] | None = None) -> None:
         if self.finished:
             return
         self.finished = True
@@ -200,11 +209,12 @@ class Toast(QFrame):
         self.bar.hide()
         self.message.setText(text)
         self._apply_kind(kind)
-        if action:
-            self.action.setText(action[0])
-            self.action.clicked.connect(action[1])
-            self.action.show()
-        self._close_later(kind)
+        if actions:
+            self.add_actions(actions)
+        self._close_later(kind, bool(actions))
+        host = self.parentWidget()
+        if isinstance(host, ToastHost):
+            QTimer.singleShot(0, host.reposition)
 
     def dismiss(self) -> None:
         try:
@@ -231,8 +241,9 @@ class ToastHost(QWidget):
         return False
 
     def reposition(self) -> None:
-        self.adjustSize()
         parent = self.parentWidget()
+        self.setFixedWidth(max(240, min(360, parent.width() - 40)))
+        self.adjustSize()
         self.move(parent.width() - self.width() - 20, parent.height() - self.height() - 20)
         self.raise_()
 
@@ -259,13 +270,8 @@ class ToastHost(QWidget):
         else:
             QTimer.singleShot(0, self.reposition)
 
-    def show_message(self, text: str, kind: str = "ok", action: tuple | None = None) -> Toast:
-        toast = Toast(text, kind)
-        if action:
-            toast.action.setText(action[0])
-            toast.action.clicked.connect(action[1])
-            toast.action.show()
-        return self._add(toast)
+    def show_message(self, text: str, kind: str = "ok") -> Toast:
+        return self._add(Toast(text, kind))
 
     def task(self, text: str) -> Toast:
         return self._add(Toast(text, busy=True))
@@ -303,3 +309,35 @@ def empty_state(painter: QPainter, rect, _icon_name: str, title: str, text: str)
     painter.drawText(box, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop, title)
     painter.setPen(QColor(theme.color("muted")))
     painter.drawText(box.adjusted(0, 26, 0, 0), Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop | Qt.TextFlag.TextWordWrap, text)
+
+
+# Modes d'affichage selon la largeur de la fenêtre.
+WIDE, MEDIUM, NARROW = "large", "moyen", "etroit"
+
+
+def layout_mode(width: int) -> str:
+    if width >= 1100:
+        return WIDE
+    return MEDIUM if width >= 760 else NARROW
+
+
+class ViewSwitch(QWidget):
+    """Sur une fenêtre étroite, alterne entre la page et ses réglages : ils n'y tiennent pas côte à côte."""
+    changed = Signal(bool)      # vrai : les réglages sont affichés
+
+    def __init__(self, main_label: str):
+        super().__init__()
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(4)
+        self.main_button = QPushButton(main_label)
+        self.settings_button = QPushButton("Réglages")
+        for button in (self.main_button, self.settings_button):
+            button.setCheckable(True)
+            button.setAutoExclusive(True)
+            row.addWidget(button, 1)
+        self.main_button.setChecked(True)
+        self.settings_button.toggled.connect(self.changed.emit)
+
+    def showing_settings(self) -> bool:
+        return self.settings_button.isChecked()

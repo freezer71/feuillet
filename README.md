@@ -13,7 +13,7 @@ Application Qt pour imprimer et scanner, sans passer par les logiciels Epson.
 Pour un bon de retour : ouvre le PDF, choisis la Brother, trace un rectangle autour de
 l'étiquette, vérifie avec « Voir le résultat sur l'étiquette », puis imprime.
 
-Si une imprimante change d'adresse : page **Appareils**, « Rechercher sur le réseau ».
+Si une imprimante change d'adresse : page **Réglages**, « Rechercher les imprimantes ».
 
 ## Éditeur (Scanner et PDF)
 

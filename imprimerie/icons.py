@@ -73,6 +73,10 @@ def set_icon(button, name: str, size: int = 18, token: str = "text") -> None:
     button.setIconSize(QSize(size, size))
 
 
+def forget(button) -> None:
+    _registered.pop(button, None)
+
+
 def refresh_all() -> None:
     for button, (name, size, token) in list(_registered.items()):
         button.setIcon(icon(name, size, token))

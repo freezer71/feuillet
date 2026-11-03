@@ -155,8 +155,9 @@ class ExportTests(unittest.TestCase):
     def vector_pdf(self, name="doc.pdf", pages=2):
         """Un vrai PDF vectoriel, 200 × 100 pt, avec du texte extractible."""
         from PySide6.QtCore import QSizeF
-        from PySide6.QtGui import QGuiApplication, QPageSize, QPainter, QPdfWriter
-        QGuiApplication.instance() or QGuiApplication(["test"])
+        from PySide6.QtGui import QPageSize, QPainter, QPdfWriter
+        from PySide6.QtWidgets import QApplication
+        QApplication.instance() or QApplication(["test"])
         path = self.dir / name
         writer = QPdfWriter(str(path))
         writer.setPageSize(QPageSize(QSizeF(200, 100), QPageSize.Unit.Point))
@@ -205,8 +206,9 @@ class ExportTests(unittest.TestCase):
 
     def test_vector_crop_and_rotation_match_the_preview(self):
         from PySide6.QtCore import QSizeF
-        from PySide6.QtGui import QColor, QGuiApplication, QPageSize, QPainter, QPdfWriter
-        QGuiApplication.instance() or QGuiApplication(["test"])
+        from PySide6.QtGui import QColor, QPageSize, QPainter, QPdfWriter
+        from PySide6.QtWidgets import QApplication
+        QApplication.instance() or QApplication(["test"])
         path = self.dir / "square.pdf"
         writer = QPdfWriter(str(path))
         writer.setPageSize(QPageSize(QSizeF(200, 100), QPageSize.Unit.Point))
@@ -227,8 +229,9 @@ class ExportTests(unittest.TestCase):
     def _marked_pdf(self, name, transform=None):
         """Page de 200 × 100 pt avec un carré noir en haut à gauche, éventuellement transformée."""
         from PySide6.QtCore import QSizeF
-        from PySide6.QtGui import QColor, QGuiApplication, QPageSize, QPainter, QPdfWriter
-        QGuiApplication.instance() or QGuiApplication(["test"])
+        from PySide6.QtGui import QColor, QPageSize, QPainter, QPdfWriter
+        from PySide6.QtWidgets import QApplication
+        QApplication.instance() or QApplication(["test"])
         raw = self.dir / f"raw-{name}"
         writer = QPdfWriter(str(raw))
         writer.setPageSize(QPageSize(QSizeF(200, 100), QPageSize.Unit.Point))

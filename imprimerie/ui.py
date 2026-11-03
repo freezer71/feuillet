@@ -9,15 +9,18 @@ from pathlib import Path
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, QUrl, Signal
 from PySide6.QtGui import QAction, QColor, QDesktopServices, QKeySequence, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame,
-    QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
+    QAbstractItemView, QApplication, QBoxLayout, QButtonGroup, QCheckBox, QComboBox, QDialog, QFileDialog, QFormLayout, QFrame,
+    QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLayout, QLineEdit, QListWidget, QListWidgetItem, QMainWindow, QMessageBox,
     QProgressBar, QPushButton, QScrollArea, QSizePolicy, QSlider, QSpinBox, QStackedWidget, QTableWidget,
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from . import brother, config, devices, documents, icons, printing, theme
 from .editor_ui import EditorPage
-from .widgets import Section, ToastHost, compact_combo, empty_state, label, panel, run_async, to_pixmap
+from .widgets import (
+    NARROW, WIDE, MEDIUM, Section, ToastHost, ViewSwitch, compact_combo, empty_state, label, layout_mode, panel, run_async,
+    to_pixmap,
+)
 
 class Preview(QWidget):
     """Affiche une page. Un glisser à la souris y sélectionne une zone, si la sélection est active."""
@@ -27,7 +30,7 @@ class Preview(QWidget):
         super().__init__()
         self.setObjectName("preview")
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
-        self.setMinimumSize(320, 360)
+        self.setMinimumSize(200, 200)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.hint, self.selectable = hint, selectable
         self.pixmap: QPixmap | None = None
@@ -126,25 +129,34 @@ class PrintPage(QWidget):
         self.media_text = ""
         self._render_token = 0
 
-        root = QHBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(8)
+        self.view_switch = ViewSwitch("Aperçu")
+        self.view_switch.changed.connect(lambda _shown: self._apply_view())
+        self.view_switch.hide()
+        outer.addWidget(self.view_switch)
+        root = QHBoxLayout()
         root.setSpacing(8)
+        outer.addLayout(root, 1)
 
         files, files_layout = panel()
-        files.setFixedWidth(210)
+        self.files_panel = files
         files_layout.addWidget(label("Documents", "title"))
         self.list = QListWidget()
         self.list.currentRowChanged.connect(self._doc_selected)
         files_layout.addWidget(self.list, 1)
-        add = QPushButton("Ajouter des fichiers…")
-        add.clicked.connect(self.choose_files)
-        remove = QPushButton("Retirer de la liste")
-        remove.clicked.connect(self._remove_current)
-        files_layout.addWidget(add)
-        files_layout.addWidget(remove)
+        self.add_button = QPushButton("Ajouter des fichiers…")
+        self.add_button.clicked.connect(self.choose_files)
+        self.remove_button = QPushButton("Retirer de la liste")
+        self.remove_button.clicked.connect(self._remove_current)
+        files_layout.addWidget(self.add_button)
+        files_layout.addWidget(self.remove_button)
         root.addWidget(files)
 
-        center = QVBoxLayout()
+        self.center_widget = QWidget()
+        center = QVBoxLayout(self.center_widget)
+        center.setContentsMargins(0, 0, 0, 0)
         center.setSpacing(10)
         self.preview = Preview("Glisse un fichier ici, ou clique sur « Ajouter des fichiers ». "
                                "PDF, images, texte, et formats Office si LibreOffice est installé.", selectable=True)
@@ -169,11 +181,11 @@ class PrintPage(QWidget):
         zone.addWidget(self.zone_label, 1)
         zone.addWidget(self.zone_clear)
         center.addLayout(zone)
-        root.addLayout(center, 1)
+        root.addWidget(self.center_widget, 1)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setFixedWidth(300)
+        self.side_scroll = scroll
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         side, side_layout = panel()
@@ -270,10 +282,36 @@ class PrintPage(QWidget):
         icons.set_icon(self.print_button, "print", 18, "on_primary")
         side_layout.addWidget(self.print_button)
         scroll.setWidget(side)
-        root.addWidget(scroll)
+        root.addWidget(scroll, 1)
+        self.layout_mode = WIDE
+        self.set_layout_mode(WIDE)
 
         self.refresh_printers()
         self._update_controls()
+
+    def set_layout_mode(self, mode: str) -> None:
+        self.layout_mode = mode
+        files, side = {WIDE: (210, 300), MEDIUM: (150, 270), NARROW: (110, 0)}[mode]
+        self.files_panel.setFixedWidth(files)
+        if side:
+            self.side_scroll.setFixedWidth(side)
+        else:
+            self.side_scroll.setMinimumWidth(0)
+            self.side_scroll.setMaximumWidth(16777215)
+        wide = mode == WIDE
+        self.add_button.setText("Ajouter des fichiers…" if wide else "Ajouter…")
+        self.remove_button.setText("Retirer de la liste" if wide else "Retirer")
+        self.prev_button.setText("‹ Page précédente" if wide else "‹")
+        self.next_button.setText("Page suivante ›" if wide else "›")
+        self.view_switch.setVisible(mode == NARROW)
+        self._apply_view()
+
+    def _apply_view(self) -> None:
+        narrow = self.layout_mode == NARROW
+        settings = narrow and self.view_switch.showing_settings()
+        self.center_widget.setVisible(not settings)
+        self.files_panel.setVisible(not settings)
+        self.side_scroll.setVisible(not narrow or settings)
 
     def refresh_printers(self) -> None:
         current = self.printer.currentData() or self.cfg.get("last_printer")
@@ -340,7 +378,7 @@ class PrintPage(QWidget):
         if status.online:
             self._set_state(status.state, "ok")
         else:
-            self._set_state("Injoignable. Va dans « Appareils » pour la rechercher.", "error")
+            self._set_state("Injoignable. Va dans « Réglages » pour la rechercher.", "error")
 
     def _brother_ready(self, status: devices.Status) -> None:
         target = self.target()
@@ -351,7 +389,7 @@ class PrintPage(QWidget):
         if detected:
             self.label_box.setCurrentIndex(self.label_box.findData(detected.id))
         if not status.online:
-            self._set_state("Injoignable. Va dans « Appareils » pour la rechercher.", "error")
+            self._set_state("Injoignable. Va dans « Réglages » pour la rechercher.", "error")
         elif status.detail:
             self._set_state(f"{status.state} : {status.detail}", "warn")
         else:
@@ -631,7 +669,8 @@ class JobsPage(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 14, 16, 14)
         root.setSpacing(12)
-        head = QHBoxLayout()
+        self.head = QBoxLayout(QBoxLayout.Direction.LeftToRight)
+        head = self.head
         titles = QVBoxLayout()
         titles.addWidget(label("Travaux", "h1"))
         titles.addWidget(label("Les impressions de l'Epson. Les étiquettes de la Brother partent en direct : elles n'apparaissent pas ici.", "muted"))
@@ -642,8 +681,10 @@ class JobsPage(QWidget):
         icons.set_icon(self.clear_button, "trash")
         self.clear_button.setToolTip("Masque les travaux terminés. Ceux en cours restent affichés.")
         self.clear_button.clicked.connect(self._clear)
-        head.addWidget(self.cancel_button, 0, Qt.AlignmentFlag.AlignTop)
-        head.addWidget(self.clear_button, 0, Qt.AlignmentFlag.AlignTop)
+        buttons = QHBoxLayout()
+        buttons.addWidget(self.cancel_button)
+        buttons.addWidget(self.clear_button)
+        head.addLayout(buttons)
         root.addLayout(head)
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(["N°", "Document", "Imprimante", "Date", "État"])
@@ -666,6 +707,12 @@ class JobsPage(QWidget):
         self.rows: list[dict] = []
         self.all_rows: list[dict] = []
         self._update_buttons()
+
+    def set_layout_mode(self, mode: str) -> None:
+        narrow = mode == NARROW
+        self.head.setDirection(QBoxLayout.Direction.TopToBottom if narrow else QBoxLayout.Direction.LeftToRight)
+        self.table.setColumnHidden(2, mode != WIDE)     # l'imprimante, souvent la même
+        self.table.setColumnHidden(0, narrow)
 
     def refresh(self) -> None:
         run_async(self, printing.list_jobs, done=self._fill, failed=lambda m: self.message.emit(m, "error"))
@@ -712,6 +759,56 @@ class JobsPage(QWidget):
                   failed=lambda m: self.message.emit(m, "error"))
 
 
+def setting_row(title: str, description: str, control=None) -> QWidget:
+    """Une ligne de réglage : son intitulé à gauche, son action à droite."""
+    row = QWidget()
+    layout = QHBoxLayout(row)
+    layout.setContentsMargins(14, 10, 14, 10)
+    layout.setSpacing(16)
+    texts = QVBoxLayout()
+    texts.setSpacing(1)
+    texts.addWidget(label(title))
+    if description:
+        texts.addWidget(label(description, "small"))
+    layout.addLayout(texts, 1)
+    if control is not None:
+        if isinstance(control, QWidget):
+            layout.addWidget(control)
+        else:
+            layout.addLayout(control)
+    return row
+
+
+def settings_group(*rows: QWidget) -> QFrame:
+    """Des lignes regroupées dans un même bloc, séparées par un filet."""
+    group = QFrame()
+    group.setObjectName("group")
+    layout = QVBoxLayout(group)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(0)
+    for index, row in enumerate(rows):
+        if index:
+            line = QFrame()
+            line.setObjectName("hairline")
+            line.setFixedHeight(1)
+            layout.addWidget(line)
+        layout.addWidget(row)
+    return group
+
+
+def state_control() -> tuple[QHBoxLayout, QLabel, QLabel]:
+    """Un voyant et son texte, pour l'état d'un appareil."""
+    row = QHBoxLayout()
+    row.setSpacing(7)
+    dot = QLabel()
+    dot.setFixedSize(8, 8)
+    text = label("Vérification…", "muted")
+    text.setWordWrap(False)
+    row.addWidget(dot)
+    row.addWidget(text)
+    return row, dot, text
+
+
 class DevicesPage(QWidget):
     message = Signal(str, str)
     hostsChanged = Signal()
@@ -722,77 +819,103 @@ class DevicesPage(QWidget):
         super().__init__()
         self.setObjectName("page")
         self.cfg = cfg
-        root = QVBoxLayout(self)
-        root.setContentsMargins(16, 14, 16, 14)
-        root.setSpacing(14)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        outer.addWidget(scroll)
+        content = QWidget()
+        content.setObjectName("page")
+        scroll.setWidget(content)
+        centered = QHBoxLayout(content)
+        centered.setContentsMargins(20, 20, 20, 24)
+        column = QWidget()
+        column.setMaximumWidth(680)
+        centered.addStretch(1)
+        centered.addWidget(column, 100)
+        centered.addStretch(1)
+        root = QVBoxLayout(column)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(8)
+
         head = QHBoxLayout()
-        head.addWidget(label("Appareils et réglages", "h1"), 1)
-        self.search = QPushButton("Rechercher sur le réseau")
+        head.addWidget(label("Réglages", "h1"), 1)
+        self.search = QPushButton("Rechercher les imprimantes")
+        self.search.setToolTip("À utiliser si une imprimante a changé d'adresse sur le réseau")
         self.search.clicked.connect(self.discover)
         head.addWidget(self.search)
         root.addLayout(head)
 
-        epson, epson_layout = panel()
-        epson_layout.addWidget(label("Epson XP-6000 — impression et scan", "title"))
-        self.epson_state = label("", "muted")
-        epson_layout.addWidget(self.epson_state)
-        self.ink_grid = QGridLayout()
-        self.ink_grid.setColumnStretch(1, 1)
-        epson_layout.addLayout(self.ink_grid)
-        self.epson_host = QLineEdit(cfg["epson_host"])
-        self.epson_host.editingFinished.connect(self._hosts_edited)
-        epson_form = QFormLayout()
-        epson_form.addRow("Adresse IP", self.epson_host)
-        epson_layout.addLayout(epson_form)
+        # Epson
+        root.addSpacing(10)
+        root.addWidget(label("Epson XP-6000", "sectionTitle"))
+        state, self.epson_dot, self.epson_state = state_control()
+        self.ink_widget = QWidget()
+        self.ink_cells: list[tuple] = []
+        self.ink_grid = QGridLayout(self.ink_widget)
+        self.ink_grid.setContentsMargins(14, 10, 14, 12)
+        self.ink_grid.setHorizontalSpacing(14)
+        self.ink_grid.setVerticalSpacing(5)
+        self.epson_host = self._host_field(cfg["epson_host"])
+        test_page = QPushButton("Imprimer")
+        test_page.clicked.connect(self._test_page)
+        open_admin = QPushButton("Ouvrir")
+        open_admin.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(f"http://{self.cfg['epson_host']}/")))
+        root.addWidget(settings_group(
+            setting_row("État", "Impression et scan", state),
+            self.ink_widget,
+            setting_row("Adresse IP", "", self.epson_host),
+            setting_row("Page de test", "Vérifie l'impression, avec une feuille et de l'encre", test_page),
+            setting_row("Interface de l'imprimante", "Nettoyage des buses, réseau, firmware", open_admin),
+        ))
         self.queue_hint = label("", "warn")
         self.queue_hint.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.queue_hint.hide()
-        epson_layout.addWidget(self.queue_hint)
-        actions = QHBoxLayout()
-        test_page = QPushButton("Imprimer une page de test")
-        icons.set_icon(test_page, "print")
-        test_page.clicked.connect(self._test_page)
-        open_admin = QPushButton("Ouvrir la page de l'imprimante")
-        open_admin.setToolTip("Niveaux détaillés, nettoyage des buses, réseau et mise à jour du firmware")
-        open_admin.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(f"http://{self.cfg['epson_host']}/")))
-        actions.addWidget(test_page)
-        actions.addWidget(open_admin)
-        actions.addStretch(1)
-        epson_layout.addLayout(actions)
-        root.addWidget(epson)
+        root.addWidget(self.queue_hint)
 
-        brother_panel, brother_layout = panel()
-        brother_layout.addWidget(label("Brother QL-1060N — étiquettes", "title"))
-        self.brother_state = label("", "muted")
-        brother_layout.addWidget(self.brother_state)
-        self.brother_host = QLineEdit(cfg["brother_host"])
-        self.brother_host.editingFinished.connect(self._hosts_edited)
-        brother_form = QFormLayout()
-        brother_form.addRow("Adresse IP", self.brother_host)
-        brother_layout.addLayout(brother_form)
-        brother_layout.addWidget(label("Elle n'a pas de scanner.", "muted"))
-        root.addWidget(brother_panel)
+        # Brother
+        root.addSpacing(10)
+        root.addWidget(label("Brother QL-1060N", "sectionTitle"))
+        state, self.brother_dot, self.brother_state = state_control()
+        self.brother_host = self._host_field(cfg["brother_host"])
+        self.media_label = label("—", "muted")
+        self.media_label.setWordWrap(False)
+        root.addWidget(settings_group(
+            setting_row("État", "Étiquettes, sans scanner", state),
+            setting_row("Rouleau chargé", "", self.media_label),
+            setting_row("Adresse IP", "", self.brother_host),
+        ))
 
-        settings_panel, settings_layout = panel()
-        settings_layout.addWidget(label("Réglages", "title"))
-        settings_form = QFormLayout()
+        # Application
+        root.addSpacing(10)
+        root.addWidget(label("Application", "sectionTitle"))
         self.theme_box = compact_combo()
         self.theme_box.addItem("Sombre", "sombre")
         self.theme_box.addItem("Clair", "clair")
+        self.theme_box.setFixedWidth(140)
         self.theme_box.setCurrentIndex(max(0, self.theme_box.findData(cfg.get("theme", "sombre"))))
         self.theme_box.activated.connect(self._theme_chosen)
-        settings_form.addRow("Apparence", self.theme_box)
-        folder_row = QHBoxLayout()
-        self.scan_dir = label(cfg["scan_dir"], "muted")
         choose = QPushButton("Changer")
-        icons.set_icon(choose, "folder")
         choose.clicked.connect(self._choose_folder)
-        folder_row.addWidget(self.scan_dir, 1)
-        folder_row.addWidget(choose)
-        settings_form.addRow("Dossier d'export", folder_row)
-        settings_layout.addLayout(settings_form)
-        root.addWidget(settings_panel)
+        self.scan_dir_row = setting_row("Dossier d'export", cfg["scan_dir"], choose)
+        self.scan_dir = self.scan_dir_row.findChildren(QLabel)[1]
+        root.addWidget(settings_group(
+            setting_row("Apparence", "", self.theme_box),
+            self.scan_dir_row,
+        ))
         root.addStretch(1)
+
+    def _host_field(self, value: str) -> QLineEdit:
+        field = QLineEdit(value)
+        field.setFixedWidth(140)
+        field.setAlignment(Qt.AlignmentFlag.AlignRight)
+        field.editingFinished.connect(self._hosts_edited)
+        return field
+
+    def set_layout_mode(self, mode: str) -> None:
+        pass    # les lignes se replient seules, et la page défile
 
     def _theme_chosen(self) -> None:
         self.cfg["theme"] = self.theme_box.currentData()
@@ -840,34 +963,52 @@ class DevicesPage(QWidget):
                 return
         self.queue_hint.hide()
 
+    @staticmethod
+    def _show_state(dot: QLabel, text: QLabel, value: str, token: str) -> None:
+        dot.setStyleSheet(f"background: {theme.color(token)}; border-radius: 4px;")
+        text.setText(value)
+
     def _epson(self, status: devices.Status) -> None:
         if status.online:
-            detail = f" — {status.detail}" if status.detail else ""
-            self._set(self.epson_state, f"{status.state}{detail}", "warn" if status.detail else "ok")
+            detail = f" : {status.detail}" if status.detail else ""
+            self._show_state(self.epson_dot, self.epson_state, f"{status.state}{detail}", "warn" if status.detail else "ok")
         else:
-            self._set(self.epson_state, "Injoignable. Elle est peut-être éteinte, ou a changé d'adresse.", "error")
-        while self.ink_grid.count():
-            item = self.ink_grid.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        for row, (name, color, level) in enumerate(status.ink):
-            bar = QProgressBar()
-            bar.setRange(0, 100)
+            self._show_state(self.epson_dot, self.epson_state, "Injoignable", "error")
+        self.ink_widget.setVisible(bool(status.ink))
+        # Les barres sont réutilisées d'une actualisation à l'autre : rien ne clignote.
+        if len(self.ink_cells) != len(status.ink):
+            while self.ink_grid.count():
+                item = self.ink_grid.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            self.ink_cells = []
+            for column in range(len(status.ink)):
+                self.ink_grid.setColumnStretch(column, 1)
+                title = label("", "small")
+                title.setWordWrap(False)
+                bar = QProgressBar()
+                bar.setRange(0, 100)
+                bar.setTextVisible(False)
+                amount = QLabel()
+                self.ink_grid.addWidget(title, 0, column)
+                self.ink_grid.addWidget(bar, 1, column)
+                self.ink_grid.addWidget(amount, 2, column)
+                self.ink_cells.append((title, bar, amount))
+        for (title, bar, amount), (name, _color, level) in zip(self.ink_cells, status.ink):
+            title.setText(name)
             bar.setValue(max(0, level))
-            bar.setTextVisible(False)
-            chunk = theme.color("warn") if level <= 15 else theme.color("muted")
-            bar.setStyleSheet(f"QProgressBar::chunk {{ background: {chunk}; border-radius: 3px; }}")
-            self.ink_grid.addWidget(QLabel(name), row, 0)
-            self.ink_grid.addWidget(bar, row, 1)
-            self.ink_grid.addWidget(QLabel(f"{level} %"), row, 2)
+            chunk = theme.color("warn") if 0 <= level <= 15 else theme.color("muted")
+            bar.setStyleSheet(f"QProgressBar::chunk {{ background: {chunk}; }}")
+            amount.setText(f"{level} %" if level >= 0 else "?")
 
     def _brother(self, status: devices.Status) -> None:
         if not status.online:
-            self._set(self.brother_state, "Injoignable. Elle est peut-être éteinte, ou a changé d'adresse.", "error")
+            self._show_state(self.brother_dot, self.brother_state, "Injoignable", "error")
+            self.media_label.setText("—")
             return
-        media = f" — rouleau {status.media.split(' /')[0]}" if status.media else ""
-        detail = f" — {status.detail}" if status.detail else ""
-        self._set(self.brother_state, f"{status.state}{media}{detail}", "warn" if status.detail else "ok")
+        detail = f" : {status.detail}" if status.detail else ""
+        self._show_state(self.brother_dot, self.brother_state, f"{status.state}{detail}", "warn" if status.detail else "ok")
+        self.media_label.setText(status.media.split(" /")[0].replace("mm x ", " × ").replace("mm", " mm") if status.media else "Inconnu")
 
     def discover(self) -> None:
         self.search.setEnabled(False)
@@ -875,7 +1016,7 @@ class DevicesPage(QWidget):
 
         def finish(found: dict) -> None:
             self.search.setEnabled(True)
-            self.search.setText("Rechercher sur le réseau")
+            self.search.setText("Rechercher les imprimantes")
             if "epson" in found:
                 self.epson_host.setText(found["epson"])
             if "brother" in found:
@@ -889,7 +1030,7 @@ class DevicesPage(QWidget):
 
         def failed(text: str) -> None:
             self.search.setEnabled(True)
-            self.search.setText("Rechercher sur le réseau")
+            self.search.setText("Rechercher les imprimantes")
             self.message.emit(text, "error")
 
         run_async(self, devices.discover, done=finish, failed=failed)
@@ -900,27 +1041,29 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.setWindowTitle("Imprimerie")
         self.resize(1360, 860)
-        self.setMinimumSize(1160, 700)
+        # Pas de grand minimum : un gestionnaire en mosaïque l'ignore de toute façon, et tout déborde.
+        self.setMinimumSize(520, 400)
         self.setAcceptDrops(True)
         self.cfg = config.load()
         theme.set_theme(self.cfg.get("theme", "sombre"))
 
         central = QWidget()
         central.setObjectName("page")
-        outer = QHBoxLayout(central)
+        self.outer = QBoxLayout(QBoxLayout.Direction.LeftToRight, central)
+        outer = self.outer
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
         nav = QFrame()
+        self.nav = nav
         nav.setObjectName("nav")
-        nav.setFixedWidth(160)
-        nav_layout = QVBoxLayout(nav)
+        self.nav_layout = QBoxLayout(QBoxLayout.Direction.TopToBottom, nav)
+        nav_layout = self.nav_layout
         nav_layout.setContentsMargins(8, 14, 8, 12)
         nav_layout.setSpacing(2)
-        brand = label("Imprimerie", "brand")
-        brand.setContentsMargins(10, 0, 0, 0)
-        nav_layout.addWidget(brand)
-        nav_layout.addSpacing(10)
+        self.brand = label("Imprimerie", "brand")
+        self.brand.setContentsMargins(10, 0, 0, 10)
+        nav_layout.addWidget(self.brand)
 
         self.stack = QStackedWidget()
         self.print_page = PrintPage(self.cfg)
@@ -932,7 +1075,7 @@ class MainWindow(QMainWindow):
         for index, (name, icon_name, page) in enumerate([("Imprimer", "print", self.print_page),
                                                          ("Scanner et PDF", "scan", self.scan_page),
                                                          ("Travaux", "jobs", self.jobs_page),
-                                                         ("Appareils", "devices", self.devices_page)]):
+                                                         ("Réglages", "devices", self.devices_page)]):
             self.stack.addWidget(page)
             button = QPushButton(name)
             button.setObjectName("navButton")
@@ -949,6 +1092,8 @@ class MainWindow(QMainWindow):
         outer.addWidget(nav)
         outer.addWidget(self.stack, 1)
         self.setCentralWidget(central)
+        # Le contenu ne doit pas bloquer la fenêtre à sa largeur : c'est elle qui choisit le mode d'affichage.
+        self.layout().setSizeConstraint(QLayout.SizeConstraint.SetNoConstraint)
 
         self.toasts = ToastHost(central)
         for page in (self.print_page, self.scan_page, self.jobs_page, self.devices_page):
@@ -969,18 +1114,46 @@ class MainWindow(QMainWindow):
         self.status_timer.timeout.connect(self.refresh_status)
         self.status_timer.start()
         self.refresh_status()
+        self.layout_mode = ""
+        self._apply_layout()
 
         open_action = QAction(self)
         open_action.setShortcut(QKeySequence.StandardKey.Open)
         open_action.triggered.connect(self._open_files)
         self.addAction(open_action)
 
-    def _status_row(self, layout: QVBoxLayout, name: str) -> tuple[QLabel, QLabel]:
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._apply_layout()
+
+    def _apply_layout(self) -> None:
+        mode = layout_mode(self.width())
+        if mode == self.layout_mode:
+            return
+        self.layout_mode = mode
+        wide = mode == WIDE
+        # Dès que la place manque, la navigation passe en haut : elle ne prend plus de largeur.
+        self.outer.setDirection(QBoxLayout.Direction.LeftToRight if wide else QBoxLayout.Direction.TopToBottom)
+        self.nav_layout.setDirection(QBoxLayout.Direction.TopToBottom if wide else QBoxLayout.Direction.LeftToRight)
+        self.nav_layout.setContentsMargins(*((8, 14, 8, 12) if wide else (8, 6, 8, 6)))
+        self.nav.setFixedWidth(160) if wide else self.nav.setMaximumWidth(16777215)
+        if not wide:
+            self.nav.setMinimumWidth(0)
+        self.nav.setObjectName("nav" if wide else "navTop")
+        self.nav.style().polish(self.nav)
+        self.brand.setVisible(wide)
+        for _dot, text in (self.status_epson, self.status_brother):
+            text.setVisible(wide)
+        for page in (self.print_page, self.scan_page, self.jobs_page, self.devices_page):
+            page.set_layout_mode(mode)
+
+    def _status_row(self, layout, name: str) -> tuple[QLabel, QLabel]:
         row = QHBoxLayout()
         row.setSpacing(8)
         dot = QLabel()
         dot.setFixedSize(9, 9)
-        dot.setToolTip("Vérification…")
+        dot.setToolTip(f"{name} : vérification…")
+        dot.setProperty("device", name)
         text = label(name, "small")
         row.addWidget(dot)
         row.addWidget(text, 1)
@@ -996,7 +1169,8 @@ class MainWindow(QMainWindow):
         dot, _text = row
         token = "error" if not status.online else "warn" if status.detail else "faint"
         self._paint_dot(dot, token)
-        dot.setToolTip(status.state + (f" : {status.detail}" if status.detail else ""))
+        detail = f" : {status.detail}" if status.detail else ""
+        dot.setToolTip(f"{dot.property('device')} — {status.state}{detail}")
 
     def refresh_status(self) -> None:
         run_async(self, devices.ipp_status, self.cfg["epson_host"], done=lambda s: self._show_status(self.status_epson, s))
@@ -1008,6 +1182,7 @@ class MainWindow(QMainWindow):
         icons.refresh_all()
         self.scan_page._show_current(keep_view=True)
         self.refresh_status()
+        self.devices_page.refresh()
         self.update()
 
     def _open_files(self) -> None:

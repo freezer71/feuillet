@@ -7,16 +7,16 @@ from dataclasses import replace
 from pathlib import Path
 
 from PIL import Image
-from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QIcon, QKeySequence, QPainter, QPen, QPixmap
+from PySide6.QtCore import QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QColor, QIcon, QKeySequence, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractItemView, QApplication, QCheckBox, QFileDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QLineEdit,
+    QAbstractItemView, QApplication, QCheckBox, QFileDialog, QFormLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QLineEdit,
     QListWidget, QListWidgetItem, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget,
 )
 
-from . import documents, editor, escl, icons, sane_scan, theme
+from . import desktop, documents, editor, escl, icons, sane_scan, theme
 from .editor import Page
-from .widgets import Section, compact_combo, empty_state, label, panel, run_async, set_kind, to_pixmap
+from .widgets import MEDIUM, NARROW, WIDE, Section, ViewSwitch, compact_combo, empty_state, label, panel, run_async, set_kind, to_pixmap
 
 THUMB_SIZE = QSize(120, 165)
 HANDLE = 7.0
@@ -43,7 +43,7 @@ class CropCanvas(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)
-        self.setMinimumSize(320, 320)
+        self.setMinimumSize(200, 200)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.title, self.hint = title, hint
         self.pixmap: QPixmap | None = None
@@ -410,11 +410,20 @@ class EditorPage(QWidget):
         self._loading_controls = False
         self.languages = documents.tesseract_langs()
 
-        root = QHBoxLayout(self)
-        root.setContentsMargins(8, 8, 8, 8)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(8)
+        self.view_switch = ViewSwitch("Page")
+        self.view_switch.changed.connect(lambda _shown: self._apply_view())
+        self.view_switch.hide()
+        outer.addWidget(self.view_switch)
+        root = QHBoxLayout()
         root.setSpacing(8)
+        outer.addLayout(root, 1)
         root.addWidget(self._build_strip())
-        center = QVBoxLayout()
+        self.center_widget = QWidget()
+        center = QVBoxLayout(self.center_widget)
+        center.setContentsMargins(0, 0, 0, 0)
         center.setSpacing(10)
         center.addWidget(self._build_toolbar())
         self.text_bar = self._build_text_bar()
@@ -429,8 +438,11 @@ class EditorPage(QWidget):
         center.addWidget(self.canvas, 1)
         self.page_info = label("", "small")
         center.addWidget(self.page_info)
-        root.addLayout(center, 1)
-        root.addWidget(self._build_side())
+        root.addWidget(self.center_widget, 1)
+        self.side_scroll = self._build_side()
+        root.addWidget(self.side_scroll, 1)
+        self.layout_mode = WIDE
+        self.set_layout_mode(WIDE)
         self._add_shortcuts()
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
@@ -447,7 +459,7 @@ class EditorPage(QWidget):
 
     def _build_strip(self) -> QFrame:
         frame, layout = panel()
-        frame.setFixedWidth(210)
+        self.strip_panel = frame
         head = QHBoxLayout()
         self.count_label = label("Pages", "title")
         head.addWidget(self.count_label, 1)
@@ -469,8 +481,6 @@ class EditorPage(QWidget):
         self.strip.itemSelectionChanged.connect(self._refresh_controls)
         self.strip.model().rowsMoved.connect(self._reordered)
         layout.addWidget(self.strip, 1)
-        row = QHBoxLayout()
-        row.setSpacing(4)
         self.up_button = self._tool_button("up", "", "Monter", checkable=False)
         self.up_button.clicked.connect(lambda: self._move(-1))
         self.down_button = self._tool_button("down", "", "Descendre", checkable=False)
@@ -479,10 +489,9 @@ class EditorPage(QWidget):
         self.duplicate_button.clicked.connect(self._duplicate)
         self.delete_button = self._tool_button("trash", "", "Supprimer (touche Suppr)", checkable=False)
         self.delete_button.clicked.connect(self._delete)
-        for button in (self.up_button, self.down_button, self.duplicate_button, self.delete_button):
-            row.addWidget(button)
-        row.addStretch(1)
-        layout.addLayout(row)
+        self.strip_buttons = QGridLayout()
+        self.strip_buttons.setSpacing(4)
+        layout.addLayout(self.strip_buttons)
         return frame
 
     def _tool_button(self, name: str, text: str, tip: str, checkable: bool = True) -> QPushButton:
@@ -501,6 +510,7 @@ class EditorPage(QWidget):
         row.setContentsMargins(8, 6, 8, 6)
         row.setSpacing(4)
         self.tools = {}
+        self.tool_specs = {}
         for key, name, text, tip in (("crop", "crop", "Recadrer", "Tracer et ajuster le cadre de la page"),
                                      ("hand", "hand", "Déplacer", "Se déplacer dans la page zoomée (ou bouton du milieu)"),
                                      ("text", "text", "Texte", "Sélectionner le texte de la page pour le copier")):
@@ -508,6 +518,7 @@ class EditorPage(QWidget):
             button.clicked.connect(lambda _checked=False, k=key: self.set_tool(k))
             row.addWidget(button)
             self.tools[key] = button
+            self.tool_specs[key] = (name, text, tip)
         self.tools["crop"].setChecked(True)
         row.addStretch(1)
         out = self._tool_button("minus", "", "Dézoomer (Ctrl+-)", checkable=False)
@@ -553,7 +564,6 @@ class EditorPage(QWidget):
     def _build_side(self) -> QScrollArea:
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setFixedWidth(300)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         side, layout = panel()
@@ -713,6 +723,42 @@ class EditorPage(QWidget):
         scroll.setWidget(side)
         return scroll
 
+    def set_layout_mode(self, mode: str) -> None:
+        self.layout_mode = mode
+        widths = {WIDE: (210, 300, QSize(120, 165)), MEDIUM: (160, 270, QSize(96, 132)), NARROW: (104, 0, QSize(64, 88))}
+        strip, side, icon = widths[mode]
+        self.strip_panel.setFixedWidth(strip)
+        # Le nom des outils demande de la place : sinon, une icône et son nom en infobulle.
+        for key, button in self.tools.items():
+            name, text, _tip = self.tool_specs[key]
+            if mode == WIDE:
+                icons.forget(button)
+                button.setIcon(QIcon())
+                button.setText(text)
+            else:
+                button.setText("")
+                icons.set_icon(button, name)
+        self.strip.setIconSize(icon)
+        self.strip.doItemsLayout()
+        if side:
+            self.side_scroll.setFixedWidth(side)
+        else:
+            self.side_scroll.setMinimumWidth(0)
+            self.side_scroll.setMaximumWidth(16777215)
+        columns = 2 if mode == NARROW else 4
+        buttons = (self.up_button, self.down_button, self.duplicate_button, self.delete_button)
+        for index, button in enumerate(buttons):
+            self.strip_buttons.addWidget(button, index // columns, index % columns)
+        self.view_switch.setVisible(mode == NARROW)
+        self._apply_view()
+
+    def _apply_view(self) -> None:
+        narrow = self.layout_mode == NARROW
+        settings = narrow and self.view_switch.showing_settings()
+        self.center_widget.setVisible(not settings)
+        self.strip_panel.setVisible(not settings)
+        self.side_scroll.setVisible(not narrow or settings)
+
     def _slider(self, low: int, high: int) -> QSlider:
         slider = QSlider(Qt.Orientation.Horizontal)
         slider.setRange(low, high)
@@ -796,7 +842,7 @@ class EditorPage(QWidget):
             set_kind(self.state, f"{self.caps.model} : {text}", kind)
 
         run_async(self, query, done=ready, failed=lambda _m: set_kind(
-            self.state, "Scanner injoignable. Va dans « Appareils » pour le rechercher.", "error"))
+            self.state, "Scanner injoignable. Va dans « Réglages » pour le rechercher.", "error"))
 
     def _resolution_hint(self) -> None:
         value = self.resolution.currentData() or 0
@@ -838,9 +884,9 @@ class EditorPage(QWidget):
     def _task(self, text: str):
         return self.toasts.task(text) if self.toasts else None
 
-    def _finish_task(self, toast, text: str, kind: str = "ok", action=None) -> None:
+    def _finish_task(self, toast, text: str, kind: str = "ok", actions=None) -> None:
         if toast:
-            toast.finish(text, kind, action)
+            toast.finish(text, kind, actions)
         else:
             self.message.emit(text, kind)
 
@@ -1380,8 +1426,13 @@ class EditorPage(QWidget):
             self._export_toast.set_progress(done, total)
             self._export_toast.update_text(f"Export de la page {done} sur {total}…")
 
-    def _open_action(self, target: Path) -> tuple:
-        return "Ouvrir", lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
+    def _file_actions(self, target: Path) -> list[tuple]:
+        def attempt(opener, failure):
+            if not opener(target):
+                self.message.emit(failure, "error")
+
+        return [("Afficher dans le dossier", lambda: attempt(desktop.reveal_file, "Impossible d'afficher le dossier.")),
+                ("Ouvrir", lambda: attempt(desktop.open_file, "Impossible d'ouvrir le fichier."))]
 
     def export_to(self, pages: list[Page], target: Path) -> None:
         self.export_button.setEnabled(False)
@@ -1393,7 +1444,7 @@ class EditorPage(QWidget):
         def finish(_result):
             toast, self._export_toast = self._export_toast, None
             self._refresh_controls()
-            self._finish_task(toast, f"PDF enregistré : {target.name}", "ok", self._open_action(target))
+            self._finish_task(toast, f"PDF enregistré : {target.name}", "ok", self._file_actions(target))
 
         def failed(text):
             toast, self._export_toast = self._export_toast, None
@@ -1411,7 +1462,7 @@ class EditorPage(QWidget):
             target = Path(path)
             toast = self._task("Export de l'image…")
             run_async(self, editor.export_image, page, target,
-                      done=lambda _r: self._finish_task(toast, f"Image enregistrée : {target.name}", "ok", self._open_action(target)),
+                      done=lambda _r: self._finish_task(toast, f"Image enregistrée : {target.name}", "ok", self._file_actions(target)),
                       failed=lambda text: self._finish_task(toast, text, "error"))
 
     def _to_print(self) -> None:

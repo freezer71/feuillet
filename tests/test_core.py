@@ -128,6 +128,25 @@ class ScanTests(unittest.TestCase):
         self.assertIn("écran", message)
 
 
+class DesktopTests(unittest.TestCase):
+    def test_reveal_falls_back_to_the_parent_folder(self):
+        from unittest import mock
+        from imprimerie import desktop
+        target = Path("/tmp/dossier/fichier.pdf")
+        with mock.patch.object(desktop, "_show_selected", return_value=False), \
+                mock.patch.object(desktop.QDesktopServices, "openUrl", return_value=True) as opened:
+            self.assertTrue(desktop.reveal_file(target))
+        self.assertEqual(opened.call_args[0][0].toLocalFile(), "/tmp/dossier")
+
+    def test_reveal_does_not_open_the_folder_twice(self):
+        from unittest import mock
+        from imprimerie import desktop
+        with mock.patch.object(desktop, "_show_selected", return_value=True), \
+                mock.patch.object(desktop.QDesktopServices, "openUrl") as opened:
+            self.assertTrue(desktop.reveal_file(Path("/tmp/a.pdf")))
+        opened.assert_not_called()
+
+
 class DeviceTests(unittest.TestCase):
     def test_parse_ipp(self):
         out = "   printer-state (enum) = idle\n   marker-levels (1setOf integer) = 88,84\n"

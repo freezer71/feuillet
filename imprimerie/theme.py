@@ -12,13 +12,13 @@ PALETTES = {
         "bg": "#1E1E1F", "nav": "#1E1E1F", "surface": "#1E1E1F", "raised": "#2A2A2C", "hover": "#2F2F31",
         "field": "#252527", "border": "#333335", "text": "#DEDEE0", "muted": "#9A9A9C", "faint": "#6A6A6C",
         "primary": "#DEDEE0", "primary_hover": "#F0F0F1", "on_primary": "#1E1E1F", "selected": "#333335",
-        "mark": "#4C7DB8", "ok": "#8FB39A", "warn": "#C9A560", "error": "#D27C7C", "canvas": "#171718", "shade": "#A0101012",
+        "group": "#242426", "mark": "#4C7DB8", "ok": "#8FB39A", "warn": "#C9A560", "error": "#D27C7C", "canvas": "#171718", "shade": "#A0101012",
     },
     "clair": {
         "bg": "#F7F7F7", "nav": "#F7F7F7", "surface": "#F7F7F7", "raised": "#ECECEC", "hover": "#E6E6E6",
         "field": "#FFFFFF", "border": "#DCDCDC", "text": "#222224", "muted": "#6B6B6D", "faint": "#9C9C9E",
         "primary": "#2A2A2C", "primary_hover": "#000000", "on_primary": "#FFFFFF", "selected": "#E2E2E2",
-        "mark": "#2F6DB0", "ok": "#4B7A5B", "warn": "#8F6B1E", "error": "#B04A4A", "canvas": "#E4E4E4", "shade": "#80222224",
+        "group": "#FFFFFF", "mark": "#2F6DB0", "ok": "#4B7A5B", "warn": "#8F6B1E", "error": "#B04A4A", "canvas": "#E4E4E4", "shade": "#80222224",
     },
 }
 
@@ -48,6 +48,7 @@ QMainWindow, QDialog, #page {{ background: {p['bg']}; }}
 QWidget {{ color: {p['text']}; }}
 QToolTip {{ background: {p['raised']}; color: {p['text']}; border: 1px solid {p['border']}; padding: 3px; }}
 #nav {{ background: {p['nav']}; border-right: 1px solid {p['border']}; }}
+#navTop {{ background: {p['nav']}; border-bottom: 1px solid {p['border']}; }}
 #brand {{ font-size: 13px; font-weight: 600; color: {p['muted']}; }}
 #navButton {{ background: transparent; border: none; border-radius: 4px; text-align: left; padding: 7px 10px; color: {p['muted']}; }}
 #navButton:hover {{ color: {p['text']}; }}
@@ -55,6 +56,9 @@ QToolTip {{ background: {p['raised']}; color: {p['text']}; border: 1px solid {p[
 #panel {{ background: transparent; border: none; }}
 #toolbar {{ background: transparent; border: none; }}
 #title {{ font-size: 13px; font-weight: 600; }}
+#sectionTitle {{ color: {p['muted']}; font-size: 12px; font-weight: 600; padding: 0 2px; }}
+#group {{ background: {p['group']}; border: 1px solid {p['border']}; border-radius: 6px; }}
+#hairline {{ background: {p['border']}; border: none; }}
 #h1 {{ font-size: 15px; font-weight: 600; }}
 #sectionHeader {{ background: transparent; border: none; text-align: left; font-weight: 600; padding: 4px 0; color: {p['text']}; }}
 #sectionHeader:hover {{ background: transparent; }}
