@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Feuillet
+Comment=Imprimer, scanner et assembler des documents
+Exec=feuillet %F
+Icon=feuillet
+Terminal=false
+Categories=Office;
+MimeType=application/pdf;image/png;image/jpeg;image/webp;image/tiff;text/plain;

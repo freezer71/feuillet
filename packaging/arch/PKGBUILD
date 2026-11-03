@@ -1,0 +1,29 @@
+# Construit le paquet depuis ce dépôt : cd packaging/arch && makepkg -si
+pkgname=feuillet
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Imprimer, scanner et assembler des documents sous Linux"
+arch=('any')
+url="https://github.com/freezer71/feuillet"
+license=('LicenseRef-unknown')
+depends=('python' 'pyside6' 'qt6-svg' 'python-pillow' 'python-numpy' 'python-pycups' 'python-pypdf' 'cups' 'poppler' 'net-snmp' 'sane' 'noto-fonts')
+optdepends=('tesseract: lire le texte des scans'
+            'tesseract-data-fra: OCR en français'
+            'libreoffice-fresh: ouvrir les formats Office'
+            'epsonscan2: scanner avec une Epson')
+options=('!strip' '!debug')
+
+package() {
+    local root="$startdir/../.."
+    local site
+    site="$(python -c 'import sysconfig; print(sysconfig.get_path("purelib"))')"
+    install -d "$pkgdir$site"
+    cp -r "$root/feuillet" "$pkgdir$site/"
+    find "$pkgdir$site" -name __pycache__ -type d -prune -exec rm -rf {} +
+    python -m compileall -q -s "$pkgdir" "$pkgdir$site/feuillet"
+    install -d "$pkgdir/usr/bin"
+    printf '#!/bin/sh\nexec python -m feuillet "$@"\n' > "$pkgdir/usr/bin/feuillet"
+    chmod 755 "$pkgdir/usr/bin/feuillet"
+    install -Dm644 "$root/data/feuillet.desktop" "$pkgdir/usr/share/applications/feuillet.desktop"
+    install -Dm644 "$root/data/feuillet.svg" "$pkgdir/usr/share/icons/hicolor/scalable/apps/feuillet.svg"
+}

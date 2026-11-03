@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QListWidget, QListWidgetItem, QMessageBox, QPushButton, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget,
 )
 
-from . import desktop, documents, editor, escl, icons, sane_scan, theme
+from . import config, desktop, documents, editor, escl, icons, sane_scan, theme
 from .editor import Page
 from .widgets import MEDIUM, NARROW, WIDE, Section, ViewSwitch, compact_combo, empty_state, label, panel, run_async, set_kind, to_pixmap
 
@@ -394,7 +394,7 @@ class EditorPage(QWidget):
         self.pages: list[Page] = []
         self.undo_stack: list[list[Page]] = []
         self.redo_stack: list[list[Page]] = []
-        self.caps: escl.Capabilities | None = None
+        self.caps: sane_scan.Capabilities | None = None
         self.folder = editor.data_dir()
         self.folder.mkdir(parents=True, exist_ok=True)
         self.scan_count = 0
@@ -577,14 +577,15 @@ class EditorPage(QWidget):
         self.state = label("Vérification du scanner…", "small")
         inner.addWidget(self.state)
         form = self._form()
+        self.scan_form = form
+        self.scanner_box = compact_combo()
+        self.scanner_box.activated.connect(self._scanner_chosen)
+        form.addRow("Scanner", self.scanner_box)
+        self.source = compact_combo()
+        form.addRow("Source", self.source)
         self.area = compact_combo()
-        self.area.addItems(list(sane_scan.AREAS))
         self.color = compact_combo()
-        self.color.addItems(list(sane_scan.COLOR_MODES))
         self.resolution = compact_combo()
-        for value in (100, 200, 300, 600, 1200):
-            self.resolution.addItem(f"{value} dpi", value)
-        self.resolution.setCurrentIndex(2)
         self.resolution.currentIndexChanged.connect(self._resolution_hint)
         form.addRow("Zone", self.area)
         form.addRow("Couleur", self.color)
@@ -829,20 +830,76 @@ class EditorPage(QWidget):
 
     # --- Scanner ---------------------------------------------------------------------------
 
+    def current_scanner(self) -> dict | None:
+        scanners = self.cfg["scanners"]
+        chosen = self.cfg.get("scanner")
+        return next((item for item in scanners if item["id"] == chosen), scanners[0] if scanners else None)
+
+    def _scanner_chosen(self) -> None:
+        self.cfg["scanner"] = self.scanner_box.currentData()
+        config.save(self.cfg)
+        self.refresh()
+
     def refresh(self) -> None:
-        scanner = escl.Scanner(self.cfg["epson_host"])
+        scanner = self.current_scanner()
+        self.scanner_box.clear()
+        for item in self.cfg["scanners"]:
+            self.scanner_box.addItem(item["name"], item["id"])
+        self.scan_form.setRowVisible(self.scanner_box, len(self.cfg["scanners"]) > 1)
+        if scanner is None:
+            self.caps = None
+            set_kind(self.state, "Aucun scanner. Ajoute-en un dans Réglages.", "warn")
+            self.scan_form.setRowVisible(self.source, False)
+            self.scan_button.setEnabled(False)
+            return
+        self.scanner_box.setCurrentIndex(max(0, self.scanner_box.findData(scanner["id"])))
+        if self.scan_button.text() != "Scan en cours…":
+            self.scan_button.setEnabled(True)
 
         def query():
-            return scanner.capabilities(), scanner.state()
+            caps = sane_scan.capabilities(scanner)
+            state = ""
+            if scanner.get("host"):
+                try:
+                    state = escl.Scanner(scanner["host"]).state()
+                except (OSError, escl.ScanError, ValueError):
+                    state = ""     # l'état est un plus : tous les appareils ne le donnent pas
+            return scanner["id"], caps, state
 
         def ready(result):
-            self.caps, state = result
+            scanner_id, caps, state = result
+            if scanner_id != (self.current_scanner() or {}).get("id"):
+                return
+            self.caps = caps
+            self._fill_scan_options(caps)
             names = {"Idle": ("prêt", "ok"), "Processing": ("occupé", "warn"), "Stopped": ("arrêté", "error")}
-            text, kind = names.get(state, (state, "muted"))
-            set_kind(self.state, f"{self.caps.model} : {text}", kind)
+            text, kind = names.get(state, ("prêt", "ok"))
+            set_kind(self.state, f"{scanner['name']} : {text}", kind)
 
-        run_async(self, query, done=ready, failed=lambda _m: set_kind(
-            self.state, "Scanner injoignable. Va dans « Réglages » pour le rechercher.", "error"))
+        def failed(text):
+            self.caps = None
+            set_kind(self.state, text, "error")
+
+        run_async(self, query, done=ready, failed=failed)
+
+    def _fill_scan_options(self, caps: sane_scan.Capabilities) -> None:
+        def fill(box, values, default):
+            current = box.currentData() if box.currentData() is not None else default
+            box.blockSignals(True)
+            box.clear()
+            for value in values:
+                box.addItem(f"{value} dpi" if isinstance(value, int) else value, value)
+            index = box.findData(current)
+            box.setCurrentIndex(index if index >= 0 else 0)
+            box.blockSignals(False)
+
+        fill(self.area, caps.areas, "A4")
+        fill(self.color, caps.colors, sane_scan.COLOR)
+        wanted = 300 if 300 in caps.resolutions else None
+        fill(self.resolution, caps.resolutions, wanted)
+        fill(self.source, caps.sources, None)
+        self.scan_form.setRowVisible(self.source, len(caps.sources) > 1)
+        self._resolution_hint()
 
     def _resolution_hint(self) -> None:
         value = self.resolution.currentData() or 0
@@ -854,20 +911,23 @@ class EditorPage(QWidget):
             self._scan_toast.update_text(text)
 
     def scan(self) -> None:
-        if not self.scan_button.isEnabled():
+        scanner, caps = self.current_scanner(), self.caps
+        if not self.scan_button.isEnabled() or not scanner or not caps:
             return
-        area = sane_scan.AREAS[self.area.currentText()]
-        color_name = self.color.currentText()
+        area = self.area.currentData()
+        color_name = self.color.currentData()
         resolution = self.resolution.currentData()
-        host = self.cfg["epson_host"]
+        source = self.source.currentData() if len(caps.sources) > 1 else ""
         folder = self.folder
         number = self.scan_count + 1
         stage = self.scanStage
 
         def job():
-            image = sane_scan.scan(host, resolution, sane_scan.COLOR_MODES[color_name], area)
+            image = sane_scan.scan(scanner, caps, resolution, color_name, area, source or "")
             stage.emit("Enregistrement du scan…")
-            if color_name == "Noir et blanc":
+            if color_name == sane_scan.GRAY:
+                image = image.convert("L")
+            elif color_name == sane_scan.BLACK_WHITE:
                 image = image.convert("L")
                 limit = editor.otsu_threshold(image)
                 image = image.point(lambda v: 255 if v > limit else 0, mode="1")

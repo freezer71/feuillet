@@ -7,6 +7,8 @@ from dataclasses import dataclass
 
 import cups
 
+from . import admin
+
 OPTION_LABELS = {
     "PageSize": "Format du papier",
     "MediaType": "Type de papier",
@@ -71,7 +73,12 @@ def list_queues() -> dict[str, dict]:
 
 
 def default_queue() -> str | None:
-    return cups.Connection().getDefault()
+    """Le choix de l'utilisateur d'abord (lpoptions -d), sinon celui du système."""
+    connection = cups.Connection()
+    for (name, _instance), destination in connection.getDests().items():
+        if name and destination.is_default:
+            return name
+    return connection.getDefault()
 
 
 def is_raw_brother_queue(name: str, info: dict) -> bool:
@@ -139,6 +146,45 @@ def list_jobs(limit: int = 50) -> list[dict]:
             "time": job.get("time-at-creation", 0),
         })
     return rows
+
+
+def add_queue(name: str, uri: str, model: str, description: str, password: str | None = None) -> None:
+    """Crée la file et la rend utilisable tout de suite."""
+    admin.run_admin(["lpadmin", "-p", name, "-E", "-v", uri, "-m", model, "-D", description], password)
+
+
+def update_queue_uri(name: str, uri: str, password: str | None = None) -> None:
+    """Change seulement l'adresse : le pilote et les réglages de la file sont conservés."""
+    admin.run_admin(["lpadmin", "-p", name, "-E", "-v", uri], password)
+
+
+def remove_queue(name: str, password: str | None = None) -> None:
+    admin.run_admin(["lpadmin", "-x", name], password)
+
+
+def resume_queue(name: str, password: str | None = None) -> None:
+    """Remet en route une file qu'une erreur a arrêtée."""
+    admin.run_admin(["cupsenable", name], password)
+    admin.run_admin(["cupsaccept", name], password)
+
+
+def set_default_queue(name: str) -> None:
+    """Propre à l'utilisateur : ne demande aucun droit."""
+    result = subprocess.run(["lpoptions", "-d", name], capture_output=True, text=True, timeout=10)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "Impossible de définir l'imprimante par défaut.")
+
+
+def service_running() -> bool:
+    try:
+        cups.Connection().getDefault()
+        return True
+    except (RuntimeError, cups.IPPError):
+        return False
+
+
+def start_service(password: str | None = None) -> None:
+    admin.run_admin(["systemctl", "enable", "--now", "cups.service"], password)
 
 
 def job_state(job_id: int) -> int:

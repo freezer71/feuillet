@@ -1,10 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
-name = "imprimerie"
+name = "feuillet"
 version = "0.1.0"
 description = "Imprimer, scanner et assembler des documents sous Linux"
 readme = "README.md"
-requires-python = ">=3.11"
-dependencies = ["PySide6", "Pillow", "numpy", "pycups", "pypdf"]
+requires-python = ">=3.12"
+dependencies = ["PySide6-Essentials", "Pillow", "numpy", "pycups", "pypdf"]
 
 [project.gui-scripts]
-imprimerie = "imprimerie.__main__:main"
+feuillet = "feuillet.__main__:main"
+
+[tool.setuptools]
+packages = ["feuillet"]
+
+[tool.setuptools.package-data]
+feuillet = ["assets/*.svg"]

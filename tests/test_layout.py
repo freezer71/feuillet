@@ -2,6 +2,7 @@
 
 Un gestionnaire de fenêtres en mosaïque impose sa taille et ignore le minimum de la fenêtre.
 """
+import json
 import os
 import tempfile
 import unittest
@@ -13,7 +14,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QPoint, QRect  # noqa: E402
 from PySide6.QtWidgets import QAbstractButton, QApplication, QComboBox, QLineEdit, QWidget  # noqa: E402
 
-from imprimerie import config, devices, editor, escl, printing, theme, ui  # noqa: E402
+from feuillet import config, devices, editor, escl, printing, sane_scan, theme, ui  # noqa: E402
 
 QUEUE = {"EPSON_XP-6000_Series": {"printer-info": "EPSON_XP-6000_Series", "device-uri": "ipp://192.168.0.20/ipp/print",
                                   "printer-make-and-model": "EPSON"}}
@@ -40,10 +41,16 @@ class LayoutTests(unittest.TestCase):
             mock.patch.object(printing, "default_queue", lambda: "EPSON_XP-6000_Series"),
             mock.patch.object(printing, "queue_options", lambda _q: printing.parse_options(OPTIONS)),
             mock.patch.object(printing, "list_jobs", lambda: []),
-            mock.patch.object(devices, "ipp_status", lambda _h: devices.Status(online=True, state="Prête")),
+            mock.patch.object(devices, "queue_status", lambda _u: devices.Status(online=True, state="Prête", ink=[("Noir", "#000000", 50)])),
+            mock.patch.object(printing, "service_running", lambda: True),
             mock.patch.object(devices, "brother_status", lambda _h: devices.Status(online=True, state="Prête")),
-            mock.patch.object(escl.Scanner, "capabilities", side_effect=OSError("hors ligne")),
+            mock.patch.object(sane_scan, "capabilities", lambda _s: sane_scan.Capabilities()),
+            mock.patch.object(escl.Scanner, "state", lambda _s: "Idle"),
         ]
+        (base / "config.json").write_text(json.dumps({
+            "brother_host": "192.168.0.35",
+            "scanners": [{"id": "a", "name": "Scanner A", "backend": "sane", "device": "a", "host": ""},
+                         {"id": "b", "name": "Scanner B au nom vraiment très long", "backend": "escl", "device": "", "host": "10.0.0.2"}]}))
         for patch in cls.patches:
             patch.start()
         theme.set_theme("sombre")
@@ -111,7 +118,7 @@ class LayoutTests(unittest.TestCase):
             self.window.resize(width, height)
             self.settle()
             self.assertEqual((self.window.width(), self.window.height()), (width, height))
-            for index, name in enumerate(("Imprimer", "Scanner", "Travaux", "Appareils")):
+            for index, name in enumerate(("Imprimer", "Scanner", "Travaux", "Réglages")):
                 self.window.show_page(index)
                 self.check(f"{name} à {width}×{height}")
                 page = self.window.stack.currentWidget()

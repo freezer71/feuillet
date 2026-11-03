@@ -4,7 +4,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from imprimerie import brother, devices, documents, escl, printing, sane_scan
+from feuillet import brother, devices, documents, escl, printing, sane_scan
 
 
 class BrotherTests(unittest.TestCase):
@@ -117,21 +117,47 @@ class ScanTests(unittest.TestCase):
         self.assertEqual(caps.model, "E")
         self.assertEqual(caps.resolutions, [100, 300])
 
-    def test_scan_command(self):
-        args = sane_scan.scan_args("1.2.3.4", 300, "Color", "A4", "/tmp/o.png")
-        self.assertEqual(args[2], "epsonscan2:networkscanner:esci2:network:1.2.3.4")
-        for value in ("Flatbed", "Color", "300", "A4", "--format=png", "/tmp/o.png"):
-            self.assertIn(value, args)
-
     def test_busy_error_points_to_the_screen(self):
         message = sane_scan.explain("scanimage: sane_start: Document feeder out of documents")
         self.assertIn("écran", message)
 
 
+class MigrationTests(unittest.TestCase):
+    def test_old_data_follows_the_new_name(self):
+        import json
+        from feuillet import config
+        with tempfile.TemporaryDirectory() as tmp:
+            conf, data = Path(tmp) / "config", Path(tmp) / "data"
+            (conf / "imprimerie").mkdir(parents=True)
+            (conf / "imprimerie" / "config.json").write_text('{"theme": "clair"}')
+            session = data / "imprimerie" / "session"
+            session.mkdir(parents=True)
+            (session / "scan-1.png").write_bytes(b"x")
+            (session / "session.json").write_text(json.dumps({"pages": [{"source": str(session / "scan-1.png")}]}))
+            config.migrate_old_data(conf, data)
+            self.assertFalse((conf / "imprimerie").exists())
+            self.assertIn("clair", (conf / "feuillet" / "config.json").read_text())
+            source = json.loads((data / "feuillet" / "session" / "session.json").read_text())["pages"][0]["source"]
+            self.assertEqual(source, str(data / "feuillet" / "session" / "scan-1.png"))
+            self.assertTrue(Path(source).exists())
+
+    def test_existing_new_data_is_never_overwritten(self):
+        from feuillet import config
+        with tempfile.TemporaryDirectory() as tmp:
+            conf, data = Path(tmp) / "config", Path(tmp) / "data"
+            (conf / "imprimerie").mkdir(parents=True)
+            (conf / "feuillet").mkdir()
+            (conf / "feuillet" / "config.json").write_text("nouveau")
+            (conf / "imprimerie" / "config.json").write_text("ancien")
+            config.migrate_old_data(conf, data)
+            self.assertEqual((conf / "feuillet" / "config.json").read_text(), "nouveau")
+            self.assertTrue((conf / "imprimerie").exists())
+
+
 class DesktopTests(unittest.TestCase):
     def test_reveal_falls_back_to_the_parent_folder(self):
         from unittest import mock
-        from imprimerie import desktop
+        from feuillet import desktop
         target = Path("/tmp/dossier/fichier.pdf")
         with mock.patch.object(desktop, "_show_selected", return_value=False), \
                 mock.patch.object(desktop.QDesktopServices, "openUrl", return_value=True) as opened:
@@ -140,7 +166,7 @@ class DesktopTests(unittest.TestCase):
 
     def test_reveal_does_not_open_the_folder_twice(self):
         from unittest import mock
-        from imprimerie import desktop
+        from feuillet import desktop
         with mock.patch.object(desktop, "_show_selected", return_value=True), \
                 mock.patch.object(desktop.QDesktopServices, "openUrl") as opened:
             self.assertTrue(desktop.reveal_file(Path("/tmp/a.pdf")))

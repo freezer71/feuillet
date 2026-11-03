@@ -21,7 +21,7 @@ class DocumentError(RuntimeError):
 
 
 def _workdir() -> Path:
-    return Path(tempfile.mkdtemp(prefix="imprimerie-"))
+    return Path(tempfile.mkdtemp(prefix="feuillet-"))
 
 
 def _text_to_pdf(source: Path, html: bool) -> Path:
@@ -96,7 +96,7 @@ class Document:
                 image.seek(page)
                 keep_alpha = image.mode in ("RGBA", "LA", "P")
                 return ImageOps.exif_transpose(image).convert("RGBA" if keep_alpha else "RGB")
-        with tempfile.TemporaryDirectory(prefix="imprimerie-") as tmp:
+        with tempfile.TemporaryDirectory(prefix="feuillet-") as tmp:
             base = Path(tmp) / "page"
             result = subprocess.run(
                 ["pdftocairo", "-png", "-singlefile", "-cropbox", "-r", str(dpi), "-f", str(page + 1), "-l", str(page + 1),
@@ -149,7 +149,7 @@ def pages_to_pdf(images: list[Image.Image], target: Path, dpi: int, jpeg_quality
 
 def image_to_ocr_pdf(image: Image.Image, target: Path, dpi: int, lang: str) -> None:
     """Une page PDF avec une couche de texte cherchable."""
-    with tempfile.TemporaryDirectory(prefix="imprimerie-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="feuillet-") as tmp:
         source = Path(tmp) / "page.png"
         image.save(source, dpi=(dpi, dpi))
         base = Path(tmp) / "page"

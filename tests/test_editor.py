@@ -5,8 +5,8 @@ from unittest import mock
 
 from PIL import Image, ImageDraw
 
-from imprimerie import documents, editor
-from imprimerie.editor import Page
+from feuillet import documents, editor
+from feuillet.editor import Page
 
 
 class GeometryTests(unittest.TestCase):

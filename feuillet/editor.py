@@ -367,7 +367,7 @@ def page_words(page: Page, lang: str) -> tuple[list[tuple], bool]:
         scale = 300 / dpi
         image = image.resize((round(image.width * scale), round(image.height * scale)), Image.Resampling.LANCZOS)
         dpi = 300
-    with tempfile.TemporaryDirectory(prefix="imprimerie-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="feuillet-") as tmp:
         source = Path(tmp) / "page.png"
         image.save(source, dpi=(dpi, dpi), compress_level=1)
         result = subprocess.run(["tesseract", str(source), "stdout", "-l", lang, "--dpi", str(round(dpi)), "tsv"],
@@ -383,7 +383,7 @@ def page_words(page: Page, lang: str) -> tuple[list[tuple], bool]:
 
 def data_dir() -> Path:
     base = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
-    return base / "imprimerie" / "session"
+    return base / "feuillet" / "session"
 
 
 def save_session(pages: list[Page], folder: Path, scan_count: int) -> None:
@@ -484,7 +484,7 @@ def export_pdf(pages: list[Page], target: Path, ocr_lang: str = "", progress=Non
     limit, jpeg = QUALITIES[quality]
     writer = pypdf.PdfWriter()
     readers: dict[Path, object] = {}
-    with tempfile.TemporaryDirectory(prefix="imprimerie-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="feuillet-") as tmp:
         for number, page in enumerate(pages):
             single = Path(tmp) / f"{number}.pdf"
             if ocr_lang:

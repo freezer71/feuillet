@@ -5,8 +5,6 @@ import re
 import shutil
 import socket
 import subprocess
-import urllib.request
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 SNMP_STATE = "1.3.6.1.2.1.25.3.5.1.1.1"
@@ -27,6 +25,10 @@ class Status:
 INK_NAMES = {"Photo Black ink": "Noir photo", "Black ink": "Noir", "Cyan ink": "Cyan",
              "Magenta ink": "Magenta", "Yellow ink": "Jaune"}
 STATES = {"idle": "Prête", "processing": "En cours d'impression", "stopped": "Arrêtée"}
+REASONS = {"media-empty": "plus de papier", "media-needed": "plus de papier", "media-jam": "bourrage papier",
+           "toner-low": "toner bientôt vide", "toner-empty": "toner vide", "marker-supply-low": "encre bientôt vide",
+           "marker-supply-empty": "plus d'encre", "door-open": "capot ouvert", "cover-open": "capot ouvert",
+           "offline": "hors ligne", "paused": "en pause"}
 
 
 def parse_ipp(output: str) -> dict[str, str]:
@@ -38,20 +40,22 @@ def parse_ipp(output: str) -> dict[str, str]:
     return values
 
 
-def ipp_status(host: str) -> Status:
+def ipp_attributes(uri: str) -> dict[str, str]:
     try:
-        result = subprocess.run(
-            ["ipptool", "-tv", "-T", "5", f"ipp://{host}:631/ipp/print", "get-printer-attributes.test"],
-            capture_output=True, text=True, timeout=12)
+        result = subprocess.run(["ipptool", "-tv", "-T", "5", uri, "get-printer-attributes.test"],
+                                capture_output=True, text=True, timeout=12)
     except (OSError, subprocess.TimeoutExpired):
-        return Status()
-    attrs = parse_ipp(result.stdout)
+        return {}
+    return parse_ipp(result.stdout)
+
+
+def status_from_attributes(attrs: dict[str, str]) -> Status:
     if "printer-state" not in attrs:
         return Status()
     status = Status(online=True, model=attrs.get("printer-make-and-model", ""),
                     state=STATES.get(attrs["printer-state"], attrs["printer-state"]))
     reasons = attrs.get("printer-state-reasons", "none")
-    status.detail = "" if reasons == "none" else reasons
+    status.detail = "" if reasons == "none" else REASONS.get(reasons.split(",")[0].rsplit("-", 1)[0] if reasons.split(",")[0].endswith(("-report", "-warning", "-error")) else reasons.split(",")[0], reasons)
     names = attrs.get("marker-names", "").split(",")
     colors = attrs.get("marker-colors", "").split(",")
     levels = attrs.get("marker-levels", "").split(",")
@@ -59,6 +63,13 @@ def ipp_status(host: str) -> Status:
         if level.strip().lstrip("-").isdigit():
             status.ink.append((INK_NAMES.get(name, name), color, int(level)))
     return status
+
+
+def queue_status(uri: str) -> Status:
+    """État d'une imprimante à partir de l'adresse de sa file. Seul IPP donne le détail."""
+    if uri.startswith(("ipp://", "ipps://")):
+        return status_from_attributes(ipp_attributes(uri))
+    return Status(online=True, state="Prête")
 
 
 def _snmp(host: str, oid: str) -> str:
@@ -93,7 +104,7 @@ def brother_status(host: str) -> Status:
     return status
 
 
-def _port_open(host: str, port: int) -> bool:
+def port_open(host: str, port: int) -> bool:
     try:
         with socket.create_connection((host, port), timeout=1):
             return True
@@ -111,31 +122,3 @@ def local_prefix() -> str | None:
     finally:
         probe.close()
     return address.rsplit(".", 1)[0]
-
-
-def identify(host: str) -> str | None:
-    """Renvoie 'epson', 'brother' ou None."""
-    if ipp_status(host).model.upper().startswith("EPSON"):
-        return "epson"
-    try:
-        with urllib.request.urlopen(f"http://{host}/printer/main.html", timeout=3) as response:
-            if b"Brother QL" in response.read(4096):
-                return "brother"
-    except OSError:
-        pass
-    return None
-
-
-def discover() -> dict[str, str]:
-    """Cherche l'Epson et la Brother sur le /24 local : {'epson': ip, 'brother': ip}."""
-    prefix = local_prefix()
-    if not prefix:
-        return {}
-    hosts = [f"{prefix}.{i}" for i in range(1, 255)]
-    with ThreadPoolExecutor(64) as pool:
-        candidates = [h for h, up in zip(hosts, pool.map(lambda h: _port_open(h, 9100), hosts)) if up]
-        found = {}
-        for host, kind in zip(candidates, pool.map(identify, candidates)):
-            if kind:
-                found.setdefault(kind, host)
-    return found

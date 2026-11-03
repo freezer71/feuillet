@@ -15,8 +15,9 @@ from PySide6.QtWidgets import (
     QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
-from . import brother, config, devices, documents, icons, printing, theme
+from . import brother, config, devices, discovery, documents, icons, printing, theme
 from .editor_ui import EditorPage
+from .setup_ui import AddDeviceDialog, admin_task
 from .widgets import (
     NARROW, WIDE, MEDIUM, Section, ToastHost, ViewSwitch, compact_combo, empty_state, label, layout_mode, panel, run_async,
     to_pixmap,
@@ -112,6 +113,7 @@ class Target:
     id: str
     name: str
     is_brother: bool = False
+    uri: str = ""
 
 
 class PrintPage(QWidget):
@@ -326,8 +328,9 @@ class PrintPage(QWidget):
         for name, info in queues.items():
             if not printing.is_raw_brother_queue(name, info):
                 title = info.get("printer-info") or name
-                self.targets.append(Target(name, title.replace("_", " ")))
-        self.targets.append(Target("__brother__", "Brother QL-1060N", True))
+                self.targets.append(Target(name, title.replace("_", " "), uri=info.get("device-uri", "")))
+        if self.cfg.get("brother_host"):
+            self.targets.append(Target("__brother__", "Brother QL-1060N", True))
         self.printer.blockSignals(True)
         self.printer.clear()
         for target in self.targets:
@@ -337,6 +340,7 @@ class PrintPage(QWidget):
         self.printer.setCurrentIndex(max(0, index))
         self.printer.blockSignals(False)
         self._printer_changed()
+        self._update_controls()
 
     def target(self) -> Target | None:
         index = self.printer.currentIndex()
@@ -345,6 +349,7 @@ class PrintPage(QWidget):
     def _printer_changed(self) -> None:
         target = self.target()
         if not target:
+            self._set_state("Aucune imprimante. Ajoute-en une dans Réglages.", "warn")
             return
         self.cfg["last_printer"] = target.id
         config.save(self.cfg)
@@ -360,7 +365,9 @@ class PrintPage(QWidget):
                       done=self._brother_ready, failed=self._state_failed)
         else:
             run_async(self, printing.queue_options, target.id, done=self._fill_cups_options, failed=self._state_failed)
-            run_async(self, devices.ipp_status, self.cfg["epson_host"], done=self._epson_ready, failed=self._state_failed)
+            uri = target.uri
+            run_async(self, devices.queue_status, uri,
+                      done=lambda status: self._queue_ready(status, uri), failed=self._state_failed)
 
     def _set_state(self, text: str, kind: str) -> None:
         self.printer_state.setObjectName(kind)
@@ -370,15 +377,16 @@ class PrintPage(QWidget):
     def _state_failed(self, message: str) -> None:
         self._set_state(message, "error")
 
-    def _epson_ready(self, status: devices.Status) -> None:
+    def _queue_ready(self, status: devices.Status, uri: str) -> None:
         target = self.target()
-        if not target or target.is_brother or "EPSON" not in target.id.upper():
-            self._set_state("", "muted")
+        if not target or target.uri != uri:
             return
-        if status.online:
-            self._set_state(status.state, "ok")
-        else:
+        if not status.online:
             self._set_state("Injoignable. Va dans « Réglages » pour la rechercher.", "error")
+        elif status.detail:
+            self._set_state(f"{status.state} : {status.detail}", "warn")
+        else:
+            self._set_state(status.state, "ok")
 
     def _brother_ready(self, status: devices.Status) -> None:
         target = self.target()
@@ -482,7 +490,7 @@ class PrintPage(QWidget):
 
     def _update_controls(self) -> None:
         document = self.current_doc()
-        self.print_button.setEnabled(document is not None)
+        self.print_button.setEnabled(document is not None and self.target() is not None)
         self.label_preview_button.setEnabled(document is not None)
         count = document.page_count if document else 0
         self.page_label.setText(f"Page {self.page_index + 1} sur {count}" if document else "")
@@ -613,7 +621,7 @@ class PrintPage(QWidget):
         def job():
             if zone:
                 cropped = documents.crop_normalized(document.render(page, 300), zone)
-                path = Path(tempfile.mkdtemp(prefix="imprimerie-")) / "zone.png"
+                path = Path(tempfile.mkdtemp(prefix="feuillet-")) / "zone.png"
                 cropped.save(path, dpi=(300, 300))
                 return printing.submit(printing.lp_args(target.id, str(path), document.name, copies, "",
                                                         options, True, orientation))
@@ -811,14 +819,18 @@ def state_control() -> tuple[QHBoxLayout, QLabel, QLabel]:
 
 class DevicesPage(QWidget):
     message = Signal(str, str)
-    hostsChanged = Signal()
+    devicesChanged = Signal()
     themeChanged = Signal()
-    testPageRequested = Signal()
+    testPageRequested = Signal(str)
 
     def __init__(self, cfg: dict):
         super().__init__()
         self.setObjectName("page")
         self.cfg = cfg
+        self.queues: dict = {}
+        self.default_queue = ""
+        self._signature = None
+        self.cells: dict = {}
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         scroll = QScrollArea()
@@ -842,53 +854,26 @@ class DevicesPage(QWidget):
 
         head = QHBoxLayout()
         head.addWidget(label("Réglages", "h1"), 1)
-        self.search = QPushButton("Rechercher les imprimantes")
-        self.search.setToolTip("À utiliser si une imprimante a changé d'adresse sur le réseau")
-        self.search.clicked.connect(self.discover)
-        head.addWidget(self.search)
+        self.add_button = QPushButton("Ajouter un appareil")
+        self.add_button.setObjectName("primary")
+        self.add_button.clicked.connect(self.open_wizard)
+        head.addWidget(self.add_button)
         root.addLayout(head)
 
-        # Epson
-        root.addSpacing(10)
-        root.addWidget(label("Epson XP-6000", "sectionTitle"))
-        state, self.epson_dot, self.epson_state = state_control()
-        self.ink_widget = QWidget()
-        self.ink_cells: list[tuple] = []
-        self.ink_grid = QGridLayout(self.ink_widget)
-        self.ink_grid.setContentsMargins(14, 10, 14, 12)
-        self.ink_grid.setHorizontalSpacing(14)
-        self.ink_grid.setVerticalSpacing(5)
-        self.epson_host = self._host_field(cfg["epson_host"])
-        test_page = QPushButton("Imprimer")
-        test_page.clicked.connect(self._test_page)
-        open_admin = QPushButton("Ouvrir")
-        open_admin.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(f"http://{self.cfg['epson_host']}/")))
-        root.addWidget(settings_group(
-            setting_row("État", "Impression et scan", state),
-            self.ink_widget,
-            setting_row("Adresse IP", "", self.epson_host),
-            setting_row("Page de test", "Vérifie l'impression, avec une feuille et de l'encre", test_page),
-            setting_row("Interface de l'imprimante", "Nettoyage des buses, réseau, firmware", open_admin),
-        ))
-        self.queue_hint = label("", "warn")
-        self.queue_hint.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.queue_hint.hide()
-        root.addWidget(self.queue_hint)
+        self.service_box = QWidget()
+        service_layout = QVBoxLayout(self.service_box)
+        service_layout.setContentsMargins(0, 8, 0, 0)
+        self.start_service_button = QPushButton("Activer")
+        self.start_service_button.clicked.connect(self._start_service)
+        service_layout.addWidget(settings_group(setting_row(
+            "Le service d'impression est arrêté", "Il faut l'activer une fois pour pouvoir imprimer", self.start_service_button)))
+        self.service_box.hide()
+        root.addWidget(self.service_box)
 
-        # Brother
-        root.addSpacing(10)
-        root.addWidget(label("Brother QL-1060N", "sectionTitle"))
-        state, self.brother_dot, self.brother_state = state_control()
-        self.brother_host = self._host_field(cfg["brother_host"])
-        self.media_label = label("—", "muted")
-        self.media_label.setWordWrap(False)
-        root.addWidget(settings_group(
-            setting_row("État", "Étiquettes, sans scanner", state),
-            setting_row("Rouleau chargé", "", self.media_label),
-            setting_row("Adresse IP", "", self.brother_host),
-        ))
+        self.devices_box = QVBoxLayout()
+        self.devices_box.setSpacing(8)
+        root.addLayout(self.devices_box)
 
-        # Application
         root.addSpacing(10)
         root.addWidget(label("Application", "sectionTitle"))
         self.theme_box = compact_combo()
@@ -907,15 +892,228 @@ class DevicesPage(QWidget):
         ))
         root.addStretch(1)
 
-    def _host_field(self, value: str) -> QLineEdit:
-        field = QLineEdit(value)
-        field.setFixedWidth(140)
-        field.setAlignment(Qt.AlignmentFlag.AlignRight)
-        field.editingFinished.connect(self._hosts_edited)
-        return field
-
     def set_layout_mode(self, mode: str) -> None:
         pass    # les lignes se replient seules, et la page défile
+
+    # --- Liste des appareils --------------------------------------------------------------
+
+    def _clear_devices(self) -> None:
+        while self.devices_box.count():
+            item = self.devices_box.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self.cells = {}
+
+    def refresh(self) -> None:
+        def load():
+            running = printing.service_running()
+            return running, (printing.list_queues() if running else {}), (printing.default_queue() if running else None)
+
+        run_async(self, load, done=self._loaded, failed=lambda text: self.message.emit(text, "error"))
+
+    def _loaded(self, result) -> None:
+        running, queues, default = result
+        self.service_box.setVisible(not running)
+        self.queues = {name: info for name, info in queues.items() if not printing.is_raw_brother_queue(name, info)}
+        self.default_queue = default or ""
+        signature = (tuple(sorted((name, info.get("device-uri", "")) for name, info in self.queues.items())),
+                     self.default_queue, self.cfg.get("brother_host", ""),
+                     tuple(scanner["id"] for scanner in self.cfg["scanners"]))
+        if signature != self._signature:
+            self._signature = signature
+            self._rebuild()
+        for name, info in self.queues.items():
+            uri = info.get("device-uri", "")
+            run_async(self, devices.queue_status, uri, done=lambda status, n=name: self._queue_status(n, status))
+        if self.cfg.get("brother_host"):
+            run_async(self, devices.brother_status, self.cfg["brother_host"], done=self._brother_status)
+
+    def _rebuild(self) -> None:
+        self._clear_devices()
+        if not self.queues and not self.cfg.get("brother_host") and not self.cfg["scanners"]:
+            empty = settings_group(setting_row("Aucun appareil pour l'instant",
+                                               "Clique sur « Ajouter un appareil » : l'application cherche et configure tout."))
+            self.devices_box.addSpacing(10)
+            self.devices_box.addWidget(empty)
+            return
+        if self.queues or self.cfg.get("brother_host"):
+            self.devices_box.addSpacing(10)
+            self.devices_box.addWidget(label("Imprimantes", "sectionTitle"))
+        for name, info in self.queues.items():
+            self.devices_box.addWidget(self._queue_group(name, info))
+        if self.cfg.get("brother_host"):
+            self.devices_box.addWidget(self._brother_group())
+        if self.cfg["scanners"]:
+            self.devices_box.addSpacing(10)
+            self.devices_box.addWidget(label("Scanners", "sectionTitle"))
+            rows = []
+            for scanner in self.cfg["scanners"]:
+                remove = QPushButton("Retirer")
+                remove.clicked.connect(lambda _c=False, s=scanner: self._remove_scanner(s))
+                where = scanner.get("host") or "USB"
+                rows.append(setting_row(scanner["name"], where, remove))
+            self.devices_box.addWidget(settings_group(*rows))
+
+    def _queue_group(self, name: str, info: dict) -> QFrame:
+        title = (info.get("printer-info") or name).replace("_", " ")
+        uri = info.get("device-uri", "")
+        state, dot, text = state_control()
+        ink = QWidget()
+        grid = QGridLayout(ink)
+        grid.setContentsMargins(14, 10, 14, 12)
+        grid.setHorizontalSpacing(14)
+        grid.setVerticalSpacing(5)
+        ink.hide()
+        self.cells[name] = {"dot": dot, "text": text, "ink": ink, "grid": grid, "bars": []}
+        where = discovery.host_of_uri(uri) or "USB"
+        description = f"{where}  ·  par défaut" if name == self.default_queue else where
+        rows = [setting_row(title, description, state), ink]
+
+        actions = QHBoxLayout()
+        actions.setSpacing(6)
+        if name != self.default_queue:
+            default = QPushButton("Par défaut")
+            default.clicked.connect(lambda: self._set_default(name))
+            actions.addWidget(default)
+        test = QPushButton("Page de test")
+        test.clicked.connect(lambda: self._test_page(name))
+        actions.addWidget(test)
+        if uri.startswith(("ipp://", "ipps://")):
+            page = QPushButton("Interface")
+            page.setToolTip("Nettoyage des buses, réseau, firmware")
+            page.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(f"http://{discovery.host_of_uri(uri)}/")))
+            actions.addWidget(page)
+        if info.get("printer-state") == 5:
+            resume = QPushButton("Reprendre")
+            resume.setToolTip("Une erreur a mis cette imprimante en pause")
+            resume.clicked.connect(lambda: self._admin_action(lambda password: printing.resume_queue(name, password), f"{title} a repris."))
+            actions.addWidget(resume)
+        remove = QPushButton("Retirer")
+        remove.clicked.connect(lambda: self._remove_queue(name, title))
+        actions.addWidget(remove)
+        actions_row = QWidget()
+        actions_layout = QHBoxLayout(actions_row)
+        actions_layout.setContentsMargins(14, 8, 14, 10)
+        actions_layout.addStretch(1)
+        actions_layout.addLayout(actions)
+        rows.append(actions_row)
+        return settings_group(*rows)
+
+    def _brother_group(self) -> QFrame:
+        state, dot, text = state_control()
+        self.cells["__brother__"] = {"dot": dot, "text": text}
+        self.media_label = label("—", "muted")
+        self.media_label.setWordWrap(False)
+        remove = QPushButton("Retirer")
+        remove.clicked.connect(self._remove_brother)
+        return settings_group(
+            setting_row("Brother QL-1060N", f"{self.cfg['brother_host']}  ·  étiquettes", state),
+            setting_row("Rouleau chargé", "", self.media_label),
+            setting_row("Retirer cette imprimante", "", remove),
+        )
+
+    @staticmethod
+    def _show_state(dot: QLabel, text: QLabel, value: str, token: str) -> None:
+        dot.setStyleSheet(f"background: {theme.color(token)}; border-radius: 4px;")
+        text.setText(value)
+
+    def _queue_status(self, name: str, status: devices.Status) -> None:
+        cell = self.cells.get(name)
+        if not cell:
+            return
+        if status.online:
+            detail = f" : {status.detail}" if status.detail else ""
+            self._show_state(cell["dot"], cell["text"], f"{status.state}{detail}", "warn" if status.detail else "ok")
+        else:
+            self._show_state(cell["dot"], cell["text"], "Injoignable", "error")
+        cell["ink"].setVisible(bool(status.ink))
+        # Les barres sont réutilisées d'une actualisation à l'autre : rien ne clignote.
+        if len(cell["bars"]) != len(status.ink):
+            for index in range(len(status.ink)):
+                cell["grid"].setColumnStretch(index, 1)
+                title = label("", "small")
+                title.setWordWrap(False)
+                bar = QProgressBar()
+                bar.setRange(0, 100)
+                bar.setTextVisible(False)
+                amount = QLabel()
+                cell["grid"].addWidget(title, 0, index)
+                cell["grid"].addWidget(bar, 1, index)
+                cell["grid"].addWidget(amount, 2, index)
+                cell["bars"].append((title, bar, amount))
+        for (title, bar, amount), (ink_name, _color, level) in zip(cell["bars"], status.ink):
+            title.setText(ink_name)
+            bar.setValue(max(0, level))
+            chunk = theme.color("warn") if 0 <= level <= 15 else theme.color("muted")
+            bar.setStyleSheet(f"QProgressBar::chunk {{ background: {chunk}; }}")
+            amount.setText(f"{level} %" if level >= 0 else "?")
+
+    def _brother_status(self, status: devices.Status) -> None:
+        cell = self.cells.get("__brother__")
+        if not cell:
+            return
+        if not status.online:
+            self._show_state(cell["dot"], cell["text"], "Injoignable", "error")
+            self.media_label.setText("—")
+            return
+        detail = f" : {status.detail}" if status.detail else ""
+        self._show_state(cell["dot"], cell["text"], f"{status.state}{detail}", "warn" if status.detail else "ok")
+        self.media_label.setText(status.media.split(" /")[0].replace("mm x ", " × ").replace("mm", " mm") if status.media else "Inconnu")
+
+    # --- Actions --------------------------------------------------------------------------
+
+    def open_wizard(self) -> None:
+        dialog = AddDeviceDialog(self, self.cfg)
+        dialog.exec()
+        if dialog.changed:
+            self._signature = None
+            self.refresh()
+            self.devicesChanged.emit()
+
+    def _admin_action(self, job, success: str) -> None:
+        def done(_result):
+            self.message.emit(success, "ok")
+            self._signature = None
+            self.refresh()
+            self.devicesChanged.emit()
+
+        admin_task(self, job, done, lambda text: self.message.emit(text, "error"))
+
+    def _start_service(self) -> None:
+        self._admin_action(printing.start_service, "Le service d'impression est activé.")
+
+    def _set_default(self, name: str) -> None:
+        def done(_result):
+            self._signature = None
+            self.refresh()
+            self.devicesChanged.emit()
+
+        run_async(self, printing.set_default_queue, name, done=done, failed=lambda text: self.message.emit(text, "error"))
+
+    def _remove_queue(self, name: str, title: str) -> None:
+        answer = QMessageBox.question(self, "Retirer", f"Retirer {title} de cet ordinateur ?")
+        if answer == QMessageBox.StandardButton.Yes:
+            self._admin_action(lambda password: printing.remove_queue(name, password), f"{title} est retirée.")
+
+    def _remove_brother(self) -> None:
+        answer = QMessageBox.question(self, "Retirer", "Retirer la Brother QL-1060N de cet ordinateur ?")
+        if answer == QMessageBox.StandardButton.Yes:
+            self.cfg["brother_host"] = ""
+            config.save(self.cfg)
+            self._signature = None
+            self.refresh()
+            self.devicesChanged.emit()
+
+    def _remove_scanner(self, scanner: dict) -> None:
+        answer = QMessageBox.question(self, "Retirer", f"Retirer le scanner {scanner['name']} ?")
+        if answer == QMessageBox.StandardButton.Yes:
+            self.cfg["scanners"] = [item for item in self.cfg["scanners"] if item["id"] != scanner["id"]]
+            if self.cfg.get("scanner") == scanner["id"]:
+                self.cfg["scanner"] = self.cfg["scanners"][0]["id"] if self.cfg["scanners"] else ""
+            config.save(self.cfg)
+            self._signature = None
+            self.refresh()
+            self.devicesChanged.emit()
 
     def _theme_chosen(self) -> None:
         self.cfg["theme"] = self.theme_box.currentData()
@@ -929,117 +1127,16 @@ class DevicesPage(QWidget):
             config.save(self.cfg)
             self.scan_dir.setText(path)
 
-    def _test_page(self) -> None:
-        answer = QMessageBox.question(self, "Page de test", "Imprimer une page de test sur l'Epson ? Elle utilisera une feuille et de l'encre.")
+    def _test_page(self, name: str) -> None:
+        answer = QMessageBox.question(self, "Page de test", "Imprimer une page de test ? Elle utilisera une feuille et de l'encre.")
         if answer == QMessageBox.StandardButton.Yes:
-            self.testPageRequested.emit()
-
-    def _set(self, widget: QLabel, text: str, kind: str) -> None:
-        widget.setObjectName(kind)
-        widget.setText(text)
-        widget.style().polish(widget)
-
-    def _hosts_edited(self) -> None:
-        epson, label_printer = self.epson_host.text().strip(), self.brother_host.text().strip()
-        if (epson, label_printer) != (self.cfg["epson_host"], self.cfg["brother_host"]):
-            self.cfg["epson_host"], self.cfg["brother_host"] = epson, label_printer
-            config.save(self.cfg)
-            self.hostsChanged.emit()
-            self.refresh()
-
-    def refresh(self) -> None:
-        run_async(self, devices.ipp_status, self.cfg["epson_host"], done=self._epson, failed=lambda m: self._set(self.epson_state, m, "error"))
-        run_async(self, devices.brother_status, self.cfg["brother_host"], done=self._brother, failed=lambda m: self._set(self.brother_state, m, "error"))
-        run_async(self, printing.list_queues, done=self._check_queue, failed=lambda _m: None)
-
-    def _check_queue(self, queues: dict) -> None:
-        wanted = self.cfg["epson_host"]
-        for name, info in queues.items():
-            uri = info.get("device-uri", "")
-            if "EPSON" in name.upper() and wanted not in uri:
-                command = f"sudo lpadmin -p {name} -E -v ipp://{wanted}/ipp/print -m everywhere"
-                self.queue_hint.setText(f"La file d'impression pointe encore vers {uri}. Pour la corriger :\n{command}")
-                self.queue_hint.show()
-                return
-        self.queue_hint.hide()
-
-    @staticmethod
-    def _show_state(dot: QLabel, text: QLabel, value: str, token: str) -> None:
-        dot.setStyleSheet(f"background: {theme.color(token)}; border-radius: 4px;")
-        text.setText(value)
-
-    def _epson(self, status: devices.Status) -> None:
-        if status.online:
-            detail = f" : {status.detail}" if status.detail else ""
-            self._show_state(self.epson_dot, self.epson_state, f"{status.state}{detail}", "warn" if status.detail else "ok")
-        else:
-            self._show_state(self.epson_dot, self.epson_state, "Injoignable", "error")
-        self.ink_widget.setVisible(bool(status.ink))
-        # Les barres sont réutilisées d'une actualisation à l'autre : rien ne clignote.
-        if len(self.ink_cells) != len(status.ink):
-            while self.ink_grid.count():
-                item = self.ink_grid.takeAt(0)
-                if item.widget():
-                    item.widget().deleteLater()
-            self.ink_cells = []
-            for column in range(len(status.ink)):
-                self.ink_grid.setColumnStretch(column, 1)
-                title = label("", "small")
-                title.setWordWrap(False)
-                bar = QProgressBar()
-                bar.setRange(0, 100)
-                bar.setTextVisible(False)
-                amount = QLabel()
-                self.ink_grid.addWidget(title, 0, column)
-                self.ink_grid.addWidget(bar, 1, column)
-                self.ink_grid.addWidget(amount, 2, column)
-                self.ink_cells.append((title, bar, amount))
-        for (title, bar, amount), (name, _color, level) in zip(self.ink_cells, status.ink):
-            title.setText(name)
-            bar.setValue(max(0, level))
-            chunk = theme.color("warn") if 0 <= level <= 15 else theme.color("muted")
-            bar.setStyleSheet(f"QProgressBar::chunk {{ background: {chunk}; }}")
-            amount.setText(f"{level} %" if level >= 0 else "?")
-
-    def _brother(self, status: devices.Status) -> None:
-        if not status.online:
-            self._show_state(self.brother_dot, self.brother_state, "Injoignable", "error")
-            self.media_label.setText("—")
-            return
-        detail = f" : {status.detail}" if status.detail else ""
-        self._show_state(self.brother_dot, self.brother_state, f"{status.state}{detail}", "warn" if status.detail else "ok")
-        self.media_label.setText(status.media.split(" /")[0].replace("mm x ", " × ").replace("mm", " mm") if status.media else "Inconnu")
-
-    def discover(self) -> None:
-        self.search.setEnabled(False)
-        self.search.setText("Recherche…")
-
-        def finish(found: dict) -> None:
-            self.search.setEnabled(True)
-            self.search.setText("Rechercher les imprimantes")
-            if "epson" in found:
-                self.epson_host.setText(found["epson"])
-            if "brother" in found:
-                self.brother_host.setText(found["brother"])
-            self._hosts_edited()
-            missing = [name for key, name in (("epson", "Epson"), ("brother", "Brother")) if key not in found]
-            if missing:
-                self.message.emit("Introuvable sur le réseau : " + ", ".join(missing) + ".", "warn")
-            else:
-                self.message.emit(f"Trouvées : Epson {found['epson']}, Brother {found['brother']}.", "ok")
-
-        def failed(text: str) -> None:
-            self.search.setEnabled(True)
-            self.search.setText("Rechercher les imprimantes")
-            self.message.emit(text, "error")
-
-        run_async(self, devices.discover, done=finish, failed=failed)
+            self.testPageRequested.emit(name)
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Imprimerie")
+        self.setWindowTitle("Feuillet")
         self.resize(1360, 860)
         # Pas de grand minimum : un gestionnaire en mosaïque l'ignore de toute façon, et tout déborde.
         self.setMinimumSize(520, 400)
@@ -1061,7 +1158,7 @@ class MainWindow(QMainWindow):
         nav_layout = self.nav_layout
         nav_layout.setContentsMargins(8, 14, 8, 12)
         nav_layout.setSpacing(2)
-        self.brand = label("Imprimerie", "brand")
+        self.brand = label("Feuillet", "brand")
         self.brand.setContentsMargins(10, 0, 0, 10)
         nav_layout.addWidget(self.brand)
 
@@ -1087,8 +1184,12 @@ class MainWindow(QMainWindow):
             self.group.addButton(button, index)
             nav_layout.addWidget(button)
         nav_layout.addStretch(1)
-        self.status_epson = self._status_row(nav_layout, "Epson XP-6000")
-        self.status_brother = self._status_row(nav_layout, "Brother QL-1060N")
+        self.status_box = QWidget()
+        self.status_layout = QBoxLayout(QBoxLayout.Direction.TopToBottom, self.status_box)
+        self.status_layout.setContentsMargins(0, 0, 0, 0)
+        self.status_layout.setSpacing(4)
+        nav_layout.addWidget(self.status_box)
+        self.status_rows: list = []
         outer.addWidget(nav)
         outer.addWidget(self.stack, 1)
         self.setCentralWidget(central)
@@ -1101,7 +1202,7 @@ class MainWindow(QMainWindow):
         self.print_page.toasts = self.toasts
         self.scan_page.toasts = self.toasts
         self.scan_page.sendToPrint.connect(self._scan_to_print)
-        self.devices_page.hostsChanged.connect(self._hosts_changed)
+        self.devices_page.devicesChanged.connect(self._devices_changed)
         self.devices_page.themeChanged.connect(self.apply_theme)
         self.devices_page.testPageRequested.connect(self._print_test_page)
 
@@ -1113,9 +1214,11 @@ class MainWindow(QMainWindow):
         self.status_timer.setInterval(30000)
         self.status_timer.timeout.connect(self.refresh_status)
         self.status_timer.start()
-        self.refresh_status()
         self.layout_mode = ""
         self._apply_layout()
+        self.refresh_status()
+        self.devices_page.refresh()
+        self._offer_setup()
 
         open_action = QAction(self)
         open_action.setShortcut(QKeySequence.StandardKey.Open)
@@ -1125,6 +1228,13 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._apply_layout()
+
+    def _offer_setup(self) -> None:
+        """Au premier lancement, sans appareil : on va droit à la page où en ajouter."""
+        if not self.print_page.targets and not self.cfg["scanners"] and not self.cfg.get("setup_offered"):
+            self.cfg["setup_offered"] = True
+            config.save(self.cfg)
+            self.show_page(3)
 
     def _apply_layout(self) -> None:
         mode = layout_mode(self.width())
@@ -1142,22 +1252,26 @@ class MainWindow(QMainWindow):
         self.nav.setObjectName("nav" if wide else "navTop")
         self.nav.style().polish(self.nav)
         self.brand.setVisible(wide)
-        for _dot, text in (self.status_epson, self.status_brother):
+        self.status_layout.setDirection(QBoxLayout.Direction.TopToBottom if wide else QBoxLayout.Direction.LeftToRight)
+        for _dot, text in self.status_rows:
             text.setVisible(wide)
         for page in (self.print_page, self.scan_page, self.jobs_page, self.devices_page):
             page.set_layout_mode(mode)
 
-    def _status_row(self, layout, name: str) -> tuple[QLabel, QLabel]:
-        row = QHBoxLayout()
-        row.setSpacing(8)
+    def _status_row(self, name: str) -> tuple[QLabel, QLabel]:
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
         dot = QLabel()
         dot.setFixedSize(9, 9)
         dot.setToolTip(f"{name} : vérification…")
         dot.setProperty("device", name)
         text = label(name, "small")
-        row.addWidget(dot)
-        row.addWidget(text, 1)
-        layout.addLayout(row)
+        text.setVisible(self.layout_mode == WIDE)
+        layout.addWidget(dot)
+        layout.addWidget(text, 1)
+        self.status_layout.addWidget(row)
         self._paint_dot(dot, "faint")
         return dot, text
 
@@ -1167,14 +1281,33 @@ class MainWindow(QMainWindow):
 
     def _show_status(self, row, status: devices.Status) -> None:
         dot, _text = row
-        token = "error" if not status.online else "warn" if status.detail else "faint"
-        self._paint_dot(dot, token)
-        detail = f" : {status.detail}" if status.detail else ""
-        dot.setToolTip(f"{dot.property('device')} — {status.state}{detail}")
+        try:
+            token = "error" if not status.online else "warn" if status.detail else "faint"
+            self._paint_dot(dot, token)
+            detail = f" : {status.detail}" if status.detail else ""
+            dot.setToolTip(f"{dot.property('device')} — {status.state}{detail}")
+        except RuntimeError:
+            pass    # la ligne a été remplacée pendant la vérification
 
     def refresh_status(self) -> None:
-        run_async(self, devices.ipp_status, self.cfg["epson_host"], done=lambda s: self._show_status(self.status_epson, s))
-        run_async(self, devices.brother_status, self.cfg["brother_host"], done=lambda s: self._show_status(self.status_brother, s))
+        run_async(self, printing.list_queues, done=self._status_queues, failed=lambda _text: self._status_queues({}))
+
+    def _status_queues(self, queues: dict) -> None:
+        while self.status_layout.count():
+            item = self.status_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        self.status_rows = []
+        for name, info in queues.items():
+            if printing.is_raw_brother_queue(name, info):
+                continue
+            row = self._status_row((info.get("printer-info") or name).replace("_", " "))
+            self.status_rows.append(row)
+            run_async(self, devices.queue_status, info.get("device-uri", ""), done=lambda s, r=row: self._show_status(r, s))
+        if self.cfg.get("brother_host"):
+            row = self._status_row("Brother QL-1060N")
+            self.status_rows.append(row)
+            run_async(self, devices.brother_status, self.cfg["brother_host"], done=lambda s, r=row: self._show_status(r, s))
 
     def apply_theme(self) -> None:
         theme.set_theme(self.cfg.get("theme", "sombre"))
@@ -1204,7 +1337,7 @@ class MainWindow(QMainWindow):
         if self.stack.currentWidget() is self.jobs_page:
             self.jobs_page.refresh()
 
-    def _hosts_changed(self) -> None:
+    def _devices_changed(self) -> None:
         self.print_page.refresh_printers()
         self.scan_page.refresh()
         self.refresh_status()
@@ -1213,13 +1346,9 @@ class MainWindow(QMainWindow):
         self.print_page.add_files([path])
         self.show_page(0)
 
-    def _print_test_page(self) -> None:
-        queues = [t for t in self.print_page.targets if "EPSON" in t.id.upper()]
-        if not queues:
-            self.notify("Aucune file d'impression Epson n'est configurée.", "error")
-            return
+    def _print_test_page(self, queue: str) -> None:
         toast = self.toasts.task("Page de test en préparation…")
-        args = printing.lp_args(queues[0].id, "/usr/share/cups/data/testprint", "Page de test")
+        args = printing.lp_args(queue, "/usr/share/cups/data/testprint", "Page de test")
         run_async(self, printing.submit, args,
                   done=lambda job: self.print_page._track_job(job, "page de test", toast),
                   failed=lambda text: toast.finish(text, "error"))
@@ -1246,9 +1375,10 @@ class MainWindow(QMainWindow):
 
 
 def run(argv: list[str]) -> int:
+    config.migrate_old_data()
     app = QApplication(argv)
-    app.setApplicationName("Imprimerie")
-    app.setDesktopFileName("imprimerie")
+    app.setApplicationName("Feuillet")
+    app.setDesktopFileName("feuillet")
     app.setStyle("Fusion")
     theme.set_theme(config.load().get("theme", "sombre"))
     app.setStyleSheet(theme.build_qss())
